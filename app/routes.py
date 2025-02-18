@@ -76,7 +76,7 @@ def get_relations_for_node_endpoint(current_user_id, node_label):
 
 @app.route('/query', methods=['POST'])
 @token_required
-def process_query(current_user_id):
+async def process_query(current_user_id):
     data = request.get_json()
     if not data or 'requests' not in data:
         return jsonify({"error": "Missing requests data"}), 400
@@ -96,45 +96,37 @@ def process_query(current_user_id):
             return jsonify({"error": "Invalid limit value. It should be an integer."}), 400
     else:
         limit = None
+    
     try:
         requests = data['requests']
-        annotation_id = None
-        question = None
+        annotation_id = requests.get('annotation_id')
+        question = requests.get('question')
         answer = None
-        
-        if 'annotation_id' in requests:
-            annotation_id = requests['annotation_id'] 
-        
-        if 'question' in requests:
-            question = requests['question']
         
         # Validate the request data before processing
         node_map = validate_request(requests, schema_manager.schema)
         if node_map is None:
             return jsonify({"error": "Invalid node_map returned by validate_request"}), 400
 
-        #convert id to appropriate format
+        # Convert id to appropriate format
         requests = db_instance.parse_id(requests)
 
         # Generate the query code
         query_code = db_instance.query_Generator(requests, node_map, limit)
         
-        # Run the query and parse the results
-        result = db_instance.run_query(query_code)
-        response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
+        # Run the query and parse the results asynchronously
+        result = await db_instance.run_query(query_code)
+        response_data = await db_instance.parse_and_serialize(result, schema_manager.schema, properties)
 
         # Extract node types
         nodes = requests['nodes']
-        node_types = set()
-
-        for node in nodes:
-            node_types.add(node["type"])
-
+        node_types = set(node["type"] for node in nodes)
         node_types = list(node_types)
 
         if isinstance(query_code, list):
             query_code = query_code[0]
 
+        # Handle annotation and storage
         if annotation_id:
             existing_query = storage_service.get_user_query(annotation_id, str(current_user_id), query_code)
         else:
@@ -142,49 +134,53 @@ def process_query(current_user_id):
 
         if existing_query is None:
             title = llm.generate_title(query_code)
-            summary = llm.generate_summary(response_data) if llm.generate_summary(response_data) else 'Graph to big could not summarize'
+            summary = llm.generate_summary(response_data) if llm.generate_summary(response_data) else 'Graph too big could not summarize'
             answer = llm.generate_summary(response_data, question, True, summary) if question else None
-            node_count = response_data['node_count']
-            edge_count = response_data['edge_count'] if "edge_count" in response_data else 0
+            
             if annotation_id is not None:
-                annotation = {"query": query_code, "summary": summary, "node_count": response_data["node_count"], 
-                              "edge_count": response_data["edge_count"], "node_types": node_types, 
-                              "updated_at": datetime.datetime.now()}
+                annotation = {
+                    "query": query_code,
+                    "summary": summary,
+                    "node_count": response_data["node_count"],
+                    "edge_count": response_data["edge_count"],
+                    "node_types": node_types,
+                    "updated_at": datetime.datetime.now()
+                }
                 storage_service.update(annotation_id, annotation)
             else:
-                annotation_id = storage_service.save(str(current_user_id), query_code, title, 
-                                                     summary, question, answer, node_count, edge_count, 
-                                                     node_types)
+                annotation_id = storage_service.save(
+                    str(current_user_id), query_code, title,
+                    summary, question, answer,
+                    response_data["node_count"],
+                    response_data.get("edge_count", 0),
+                    node_types
+                )
         else:
-            title, summary, annotation_id = '', '', ''
-
-        if existing_query:
             title = existing_query.title
             summary = existing_query.summary
             annotation_id = existing_query.id
             storage_service.update(annotation_id, {"updated_at": datetime.datetime.now()})
 
-        
         updated_data = storage_service.get_by_id(annotation_id)
-
-        response_data["title"] = title
-        response_data["summary"] = summary
-        response_data["annotation_id"] = str(annotation_id)
-        response_data["created_at"] = updated_data.created_at.isoformat()
-        response_data["updated_at"] = updated_data.updated_at.isoformat()
+        
+        # Update response data with metadata
+        response_data.update({
+            "title": title,
+            "summary": summary,
+            "annotation_id": str(annotation_id),
+            "created_at": updated_data.created_at.isoformat(),
+            "updated_at": updated_data.updated_at.isoformat()
+        })
 
         if question:
             response_data["question"] = question
-
         if answer:
             response_data["answer"] = answer
-
-        # if limit:
-        #     response_data = limit_graph(response_data, limit)
 
         formatted_response = json.dumps(response_data, indent=4)
         logging.info(f"\n\n============== Query ==============\n\n{query_code}")
         return Response(formatted_response, mimetype='application/json')
+        
     except Exception as e:
         logging.error(f"Error processing query: {e}")
         return jsonify({"error": str(e)}), 500
@@ -241,7 +237,7 @@ def process_user_history(current_user_id):
 
 @app.route('/annotation/<id>', methods=['GET'])
 @token_required
-def process_by_id(current_user_id, id):
+async def process_by_id(current_user_id, id):
     cursor = storage_service.get_by_id(id)
 
     if cursor is None:
@@ -274,8 +270,8 @@ def process_by_id(current_user_id, id):
 
     try:       
         # Run the query and parse the results
-        result = db_instance.run_query(query, limit)
-        response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
+        result = await db_instance.run_query(query, limit)
+        response_data = await db_instance.parse_and_serialize(result, schema_manager.schema, properties)
         
         response_data["annotation_id"] = str(annotation_id)
         response_data["title"] = title

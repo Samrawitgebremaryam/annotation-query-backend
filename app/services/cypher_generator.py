@@ -8,7 +8,7 @@ import glob
 import os
 from neo4j.graph import Node, Relationship
 load_dotenv()
-
+# what is the value 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class CypherQueryGenerator(QueryGeneratorInterface):
     def close(self):
         self.driver.close()
 
-    def load_dataset(self, path: str) -> None:
+    async def load_dataset(self, path: str) -> None:
         if not os.path.exists(path):
             raise ValueError(f"Dataset path '{path}' does not exist.")
 
@@ -38,40 +38,43 @@ class CypherQueryGenerator(QueryGeneratorInterface):
         edges_paths = [p for p in paths if p.endswith("edges.cypher")]
 
         # Helper function to process files
-        def process_files(file_paths, file_type):
+        async def process_files(file_paths, file_type):
             for file_path in file_paths:
                 logger.info(f"Start loading {file_type} dataset from '{file_path}'...")
                 try:
                     with open(file_path, 'r') as file:
                         data = file.read()
                         for line in data.splitlines():
-                            self.run_query(line)
+                            await self.run_query(line)
                 except Exception as e:
                     logger.error(f"Error loading {file_type} dataset from '{file_path}': {e}")
 
         # Process nodes and edges files
-        process_files(nodes_paths, "nodes")
-        process_files(edges_paths, "edges")
+        await process_files(nodes_paths, "nodes")
+        await process_files(edges_paths, "edges")
 
         logger.info(f"Finished loading {len(nodes_paths)} nodes and {len(edges_paths)} edges datasets.")
 
-    def run_query(self, query_code):
-        results = []
+    async def run_query(self, query_code):
         if isinstance(query_code, list):
             find_query = query_code[0]
             count_query = query_code[1]
         else:
             find_query = query_code
             count_query = None
-        
-        with self.driver.session() as session:
-            results.append(list(session.run(find_query)))
-
-        if count_query:
-            with self.driver.session() as session:
-                results.append(list(session.run(count_query)))
-
-        return results
+    
+        async with self.driver.session() as session:  # Changed from async_session to session
+            # Execute main query
+            main_results = await session.run(find_query)
+            results = [await main_results.data()]
+            
+            # Start count query if it exists
+            if count_query:
+                count_results = await session.run(count_query)
+                count_data = await count_results.data()
+                results.append(count_data)
+            
+            return results
     
     def logic_detail(self, requests):
         logic = requests.get('logic', None)  
@@ -478,28 +481,23 @@ class CypherQueryGenerator(QueryGeneratorInterface):
         return predicate_conditions
 
 
-    def parse_neo4j_results(self, results, all_properties):
-        (nodes, edges, _, _, node_count, edge_count) = self.process_result(results, all_properties)
+    async def parse_neo4j_results(self, results, all_properties):
+        (nodes, edges, _, _, node_count, edge_count) = await self.process_result(results, all_properties)
         return {"nodes": nodes, "edges": edges, "node_count": node_count, "edge_count": edge_count}
 
-    def parse_and_serialize(self, input, schema, all_properties):
-        parsed_result = self.parse_neo4j_results(input, all_properties)
+    async def parse_and_serialize(self, input, schema, all_properties):
+        parsed_result = await self.parse_neo4j_results(input, all_properties)
         return parsed_result
 
-    def convert_to_dict(self, results, schema):
-        (_, _, node_dict, edge_dict, _, _) = self.process_result(results, True)
+    async def convert_to_dict(self, results, schema):
+        (_, _, node_dict, edge_dict, _, _) = await self.process_result(results, True)
         return (node_dict, edge_dict)
 
-    def process_result(self, results, all_properties):
+    async def process_result(self, results, all_properties):
         match_result = results[0]
-        
-        # Handling the case when count_result is not available
         count_result = results[1] if len(results) > 1 else None
         
-        # Initialize default values for node_count and edge_count
-        node_count = 0  
-        edge_count = 0  
-        
+        # Initialize values
         nodes = []
         edges = []
         node_dict = {}
@@ -508,13 +506,14 @@ class CypherQueryGenerator(QueryGeneratorInterface):
         node_type = set()
         edge_type = set()
         visited_relations = set()
-
-        named_types = ['gene_name', 'transcript_name', 'protein_name', 'pathway_name', 'term_name']
-
-        # Process match_result to extract nodes and edges
+        node_count = 0
+        edge_count = 0
+        
+        # Process nodes and edges from main query
         for record in match_result:
-            for item in record.values():
+            for key, item in record.items():
                 if isinstance(item, neo4j.graph.Node):
+                    # Process node (existing node processing logic)
                     node_id = f"{list(item.labels)[0]} {item['id']}"
                     if node_id not in node_dict:
                         node_data = {
@@ -523,7 +522,7 @@ class CypherQueryGenerator(QueryGeneratorInterface):
                                 "type": list(item.labels)[0],
                             }
                         }
-
+                        # Add properties
                         for key, value in item.items():
                             if all_properties:
                                 if key != "id" and key != "synonyms":
@@ -531,46 +530,50 @@ class CypherQueryGenerator(QueryGeneratorInterface):
                             else:
                                 if key in named_types:
                                     node_data["data"]["name"] = value
+                        
                         if "name" not in node_data["data"]:
                             node_data["data"]["name"] = node_id
                         nodes.append(node_data)
+                        
                         if node_data["data"]["type"] not in node_type:
                             node_type.add(node_data["data"]["type"])
                             node_to_dict[node_data['data']['type']] = []
                         node_to_dict[node_data['data']['type']].append(node_data)
-                        node_dict[node_id] = node_data
+                
                 elif isinstance(item, neo4j.graph.Relationship):
+                    # Process relationship (existing edge processing logic)
                     source_id = f"{list(item.start_node.labels)[0]} {item.start_node['id']}"
                     target_id = f"{list(item.end_node.labels)[0]} {item.end_node['id']}"
-                    edge_data = {
-                        "data": {
-                            "label": item.type,
-                            "source": source_id,
-                            "target": target_id,
-                        }
-                    }
                     temp_relation_id = f"{source_id} - {item.type} - {target_id}"
-                    if temp_relation_id in visited_relations:
-                        continue
-                    visited_relations.add(temp_relation_id)
-
-                    for key, value in item.items():
-                        if key == 'source':
-                            edge_data["data"]["source_data"] = value
-                        else:
-                            edge_data["data"][key] = value
-                    edges.append(edge_data)
-                    if edge_data["data"]["label"] not in edge_type:
-                        edge_type.add(edge_data["data"]["label"])
-                        edge_to_dict[edge_data['data']['label']] = []
-                    edge_to_dict[edge_data['data']['label']].append(edge_data)
-
-        # Safely process the count_result if it's available
+                    
+                    if temp_relation_id not in visited_relations:
+                        edge_data = {
+                            "data": {
+                                "label": item.type,
+                                "source": source_id,
+                                "target": target_id,
+                            }
+                        }
+                        visited_relations.add(temp_relation_id)
+                        
+                        for key, value in item.items():
+                            if key == 'source':
+                                edge_data["data"]["source_data"] = value
+                            else:
+                                edge_data["data"][key] = value
+                        edges.append(edge_data)
+                        
+                        if edge_data["data"]["label"] not in edge_type:
+                            edge_type.add(edge_data["data"]["label"])
+                            edge_to_dict[edge_data['data']['label']] = []
+                        edge_to_dict[edge_data['data']['label']].append(edge_data)
+        
+        # Process count results if available
         if count_result:
-            for count_record in count_result:
-                node_count = count_record.get('total_nodes', 0)  # Safe access with default value of 0
-                edge_count = count_record.get('total_edges', 0)  # Safe access with default value of 0
-
+            for record in count_result:
+                node_count = record.get('total_nodes', 0)
+                edge_count = record.get('total_edges', 0)
+        
         return (nodes, edges, node_to_dict, edge_to_dict, node_count, edge_count)
 
     def parse_id(self, request):

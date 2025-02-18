@@ -41,9 +41,9 @@ class Neo4jConnection:
         if self.driver:
             self.driver.close()
 
-    def get_graph_data(self, request_data: Dict, limit: int = 1000) -> Dict[str, Any]:
+    async def get_graph_data(self, request_data: Dict, limit: int = 1000) -> Dict[str, Any]:
         try:
-            with self.driver.session() as session:
+            async with self.driver.session() as session:
                 # Build the query based on the request
                 query_parts = []
                 parameters = {}
@@ -79,8 +79,8 @@ class Neo4jConnection:
                 query += " LIMIT $limit"
 
                 # Execute query
-                result = session.run(query, parameters={**parameters, "limit": limit})
-                record = result.single()
+                result = await session.run(query, parameters={**parameters, "limit": limit})
+                record = await result.single()
 
                 if not record:
                     return {"nodes": [], "edges": []}
