@@ -21,6 +21,7 @@ class Storage(Schema):
                 "type": Types.String,
                 "required": True,
             },
+            "request": any,
             "query": {
                 "type": Types.String,
                 "required": True,
@@ -36,6 +37,8 @@ class Storage(Schema):
             "node_types": [{
                 "type": Types.String,
             }],
+            "node_count_by_label": any,
+            "edge_count_by_label": any,
             "title": {
                 "type": Types.String,
                 "required": True,
