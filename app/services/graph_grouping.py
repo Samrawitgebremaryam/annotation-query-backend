@@ -57,7 +57,6 @@ class Neo4jConnection:
     async def get_graph_data(self, request_data: Dict, limit: int = 1000) -> Dict[str, Any]:
         try:
             async with self.driver.session() as session:
-                # Build the query based on the request
                 query_parts = []
                 parameters = {}
 

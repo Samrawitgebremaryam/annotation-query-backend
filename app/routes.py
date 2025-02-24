@@ -534,7 +534,6 @@ def update_title(current_user_id, id):
         return jsonify({"error": str(e)}), 500
 
 
-
 @app.route("/api/graph", methods=["POST"])
 @token_required
 async def process_graph(current_user_id):
@@ -602,5 +601,3 @@ async def process_graph(current_user_id):
     finally:
         if neo4j_conn:
             neo4j_conn.close()
-
-

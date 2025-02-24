@@ -82,7 +82,7 @@ class CypherQueryGenerator(QueryGeneratorInterface):
                         results.append(list(await session.run(label_count_query)))
                 except:
                     results.append([])
-                return results
+            return results
 
         return results
 
