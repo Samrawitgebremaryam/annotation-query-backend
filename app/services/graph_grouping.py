@@ -1,10 +1,23 @@
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
-from neo4j import GraphDatabase
+from neo4j import AsyncGraphDatabase
 import nanoid
+import logging
+from dotenv import load_dotenv
+import neo4j
+from app.services.query_generator_interface import QueryGeneratorInterface
+import glob
+import os
+import asyncio
 
 MINIMUM_EDGES_TO_COLLAPSE = 2
+
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Edge:
@@ -34,7 +47,7 @@ class Graph:
 
 class Neo4jConnection:
     def __init__(self, uri: str, user: str, password: str, max_retries: int = 3):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self.max_retries = max_retries
 
     def close(self):
@@ -78,7 +91,7 @@ class Neo4jConnection:
                 query += " RETURN collect(distinct n1) + collect(distinct n2) as nodes, collect(distinct r) as relationships"
                 query += " LIMIT $limit"
 
-                # Execute query
+                # Execute main query
                 result = await session.run(query, parameters={**parameters, "limit": limit})
                 record = await result.single()
 
@@ -143,11 +156,31 @@ class Neo4jConnection:
                         }
                     })
 
+                # Start the count query in the background
+                asyncio.create_task(self.run_count_query(session, parameters))
+
                 return {"nodes": nodes, "edges": edges}
 
         except Exception as e:
             print(f"Error getting graph data: {str(e)}")
             raise
+
+    async def run_count_query(self, session, parameters):
+        count_query = "MATCH (n) RETURN count(n) as total_nodes"
+        label_count_query = "MATCH ()-[r]->() RETURN count(r) as total_edges"
+
+        try:
+            total_nodes_result = await session.run(count_query)
+            total_edges_result = await session.run(label_count_query)
+
+            total_nodes = await total_nodes_result.single()
+            total_edges = await total_edges_result.single()
+
+            # Here you can handle the count results, e.g., log them or send them to a callback
+            print(f"Total Nodes: {total_nodes['total_nodes']}, Total Edges: {total_edges['total_edges']}")
+
+        except Exception as e:
+            print(f"Error running count query: {str(e)}")
 
 def group_edges(result_graph: Graph, request: Dict) -> List[Dict]:
     """Group edges by edge_id and handle any node types"""
@@ -267,3 +300,71 @@ def group_graph(result_graph: Graph, request: Dict) -> Graph:
         return result_graph
     
     return new_graph
+
+class CypherQueryGenerator(QueryGeneratorInterface):
+    def __init__(self, dataset_path: str):
+        self.driver = AsyncGraphDatabase.driver(
+            os.getenv('NEO4J_URI'),
+            auth=(os.getenv('NEO4J_USERNAME'), os.getenv('NEO4J_PASSWORD'))
+        )
+
+    def close(self):
+        self.driver.close()
+
+    async def load_dataset(self, path: str) -> None:
+        if not os.path.exists(path):
+            raise ValueError(f"Dataset path '{path}' does not exist.")
+
+        paths = glob.glob(os.path.join(path, "**/*.cypher"), recursive=True)
+        if not paths:
+            raise ValueError(f"No .cypher files found in dataset path '{path}'.")
+
+        # Separate nodes and edges
+        nodes_paths = [p for p in paths if p.endswith("nodes.cypher")]
+        edges_paths = [p for p in paths if p.endswith("edges.cypher")]
+
+        # Helper function to process files
+        async def process_files(file_paths, file_type):
+            for file_path in file_paths:
+                logger.info(f"Start loading {file_type} dataset from '{file_path}'...")
+                try:
+                    with open(file_path, 'r') as file:
+                        data = file.read()
+                        for line in data.splitlines():
+                            await self.run_query(line)
+                except Exception as e:
+                    logger.error(f"Error loading {file_type} dataset from '{file_path}': {e}")
+
+        # Process nodes and edges files
+        await process_files(edges_paths, "edges")
+        logger.info(f"Finished loading {len(nodes_paths)} nodes and {len(edges_paths)} edges datasets.")
+
+    async def run_query(self, query_code, run_count=True):
+        results = []
+        if isinstance(query_code, list):
+            find_query = query_code[0]
+            total_count_query = query_code[1]
+            label_count_query = query_code[2]
+        else:
+            find_query = query_code
+            total_count_query = None
+            label_count_query = None
+        
+        async with self.driver.session() as session:
+            results.append(list(await session.run(find_query)))
+        if run_count:
+            if total_count_query:
+                try:
+                    async with self.driver.session() as session:
+                        results.append(list(await session.run(total_count_query)))
+                except:
+                    results.append([])
+            if label_count_query:
+                try:
+                    async with self.driver.session() as session:
+                        results.append(list(await session.run(label_count_query)))
+                except:
+                    results.append([])
+                return results
+
+        return results

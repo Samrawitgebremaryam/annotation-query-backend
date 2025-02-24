@@ -3,7 +3,7 @@ import logging
 from dotenv import load_dotenv
 import neo4j
 from app.services.query_generator_interface import QueryGeneratorInterface
-from neo4j import GraphDatabase
+from neo4j import AsyncGraphDatabase
 import glob
 import os
 from neo4j.graph import Node, Relationship
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class CypherQueryGenerator(QueryGeneratorInterface):
     def __init__(self, dataset_path: str):
-        self.driver = GraphDatabase.driver(
+        self.driver = AsyncGraphDatabase.driver(
             os.getenv('NEO4J_URI'),
             auth=(os.getenv('NEO4J_USERNAME'), os.getenv('NEO4J_PASSWORD'))
         )
@@ -26,7 +26,7 @@ class CypherQueryGenerator(QueryGeneratorInterface):
     def close(self):
         self.driver.close()
 
-    def load_dataset(self, path: str) -> None:
+    async def load_dataset(self, path: str) -> None:
         if not os.path.exists(path):
             raise ValueError(f"Dataset path '{path}' does not exist.")
 
@@ -39,24 +39,24 @@ class CypherQueryGenerator(QueryGeneratorInterface):
         edges_paths = [p for p in paths if p.endswith("edges.cypher")]
 
         # Helper function to process files
-        def process_files(file_paths, file_type):
+        async def process_files(file_paths, file_type):
             for file_path in file_paths:
                 logger.info(f"Start loading {file_type} dataset from '{file_path}'...")
                 try:
                     with open(file_path, 'r') as file:
                         data = file.read()
                         for line in data.splitlines():
-                            self.run_query(line)
+                            await self.run_query(line)
                 except Exception as e:
                     logger.error(f"Error loading {file_type} dataset from '{file_path}': {e}")
 
         # Process nodes and edges files
-        process_files(nodes_paths, "nodes")
-        process_files(edges_paths, "edges")
+        await process_files(nodes_paths, "nodes")
+        await process_files(edges_paths, "edges")
 
         logger.info(f"Finished loading {len(nodes_paths)} nodes and {len(edges_paths)} edges datasets.")
 
-    def run_query(self, query_code, run_count=True):
+    async def run_query(self, query_code, run_count=True):
         results = []
         if isinstance(query_code, list):
             find_query = query_code[0]
@@ -67,19 +67,19 @@ class CypherQueryGenerator(QueryGeneratorInterface):
             total_count_query = None
             label_count_query = None
         
-        with self.driver.session() as session:
-            results.append(list(session.run(find_query)))
+        async with self.driver.session() as session:
+            results.append(list(await session.run(find_query)))
         if run_count:
             if total_count_query:
                 try:
-                    with self.driver.session() as session:
-                        results.append(list(session.run(total_count_query)))
+                    async with self.driver.session() as session:
+                        results.append(list(await session.run(total_count_query)))
                 except:
                     results.append([])
             if label_count_query:
                 try:
-                    with self.driver.session() as session:
-                        results.append(list(session.run(label_count_query)))
+                    async with self.driver.session() as session:
+                        results.append(list(await session.run(label_count_query)))
                 except:
                     results.append([])
                 return results
