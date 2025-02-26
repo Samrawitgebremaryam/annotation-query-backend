@@ -350,20 +350,23 @@ class CypherQueryGenerator(QueryGeneratorInterface):
             label_count_query = None
         
         async with self.driver.session() as session:
-            results.append(list(await session.run(find_query)))
-        if run_count:
-            if total_count_query:
-                try:
-                    async with self.driver.session() as session:
-                        results.append(list(await session.run(total_count_query)))
-                except:
-                    results.append([])
+            result = await session.run(find_query)
+            results.append(await result.data())
+        
+        if run_count and total_count_query:
+            try:
+                async with self.driver.session() as session:
+                    result = await session.run(total_count_query)
+                    results.append(await result.data())
+            except:
+                results.append([])
+        
             if label_count_query:
                 try:
                     async with self.driver.session() as session:
-                        results.append(list(await session.run(label_count_query)))
+                        result = await session.run(label_count_query)
+                        results.append(await result.data())
                 except:
                     results.append([])
-                return results
-
+        
         return results

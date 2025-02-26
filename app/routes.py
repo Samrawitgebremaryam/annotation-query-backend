@@ -16,6 +16,9 @@ import datetime
 from app.lib import convert_to_csv
 from app.lib import generate_file_path
 from app.lib import adjust_file_path
+from asgiref.sync import async_to_sync
+from functools import wraps
+import asyncio
 
 from app.services.graph_grouping import (
     Graph,
@@ -49,6 +52,20 @@ CORS(app)
 # Setup basic logging
 logging.basicConfig(level=logging.DEBUG)
 
+def async_route(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(f(*args, **kwargs))
+        finally:
+            loop.close()
+    return wrapper
+
 @app.route('/kg-info', methods=['GET'])
 @token_required
 def get_graph_info(current_user_id):
@@ -75,165 +92,168 @@ def get_relations_for_node_endpoint(current_user_id, node_label):
 
 @app.route('/query', methods=['POST'])
 @token_required
-def process_query(current_user_id):
-    data = request.get_json()
-    if not data or 'requests' not in data:
-        return jsonify({"error": "Missing requests data"}), 400
-    
-    limit = request.args.get('limit')
-    properties = request.args.get('properties')
-    source = request.args.get('source') # can be either hypothesis or ai_assistant
-    
-    if properties:
-        properties = bool(strtobool(properties))
-    else:
-        properties = True
-
-    if limit:
-        try:
-            limit = int(limit)
-        except ValueError:
-            return jsonify({"error": "Invalid limit value. It should be an integer."}), 400
-    else:
-        limit = None
+@async_route
+async def process_query(current_user_id):
     try:
-        requests = data['requests']
-        annotation_id = None
-        question = None
-        answer = None
+        data = request.get_json()
+        if not data or 'requests' not in data:
+            return jsonify({"error": "Missing requests data"}), 400
         
-        if 'annotation_id' in requests:
-            annotation_id = requests['annotation_id'] 
+        limit = request.args.get('limit')
+        properties = request.args.get('properties')
+        source = request.args.get('source') # can be either hypothesis or ai_assistant
         
-        if 'question' in requests:
-            question = requests['question']
-
-        # Validate the request data before processing
-        node_map = validate_request(requests, schema_manager.schema)
-        if node_map is None:
-            return jsonify({"error": "Invalid node_map returned by validate_request"}), 400
-
-        #convert id to appropriate format
-        requests = db_instance.parse_id(requests)
-        
-        node_only, run_count = (True, False) if source == 'hypothesis' else (False, True)
-
-        # Generate the query code
-        query_code = db_instance.query_Generator(requests, node_map, limit, node_only)
-        
-        # Run the query and parse the results
-        result = db_instance.run_query(query_code, run_count)
-        response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
-
-        # Extract node types
-        nodes = requests['nodes']
-        node_types = set()
-
-        for node in nodes:
-            node_types.add(node["type"])
-
-        node_types = list(node_types)
-
-        if isinstance(query_code, list):
-            query_code = query_code[0]
-
-        if source == 'hypothesis':
-            response = {"nodes": response_data['nodes'], "edges": response_data['edges']}
-            formatted_response = json.dumps(response, indent=4)
-            return Response(formatted_response, mimetype='application/json')
-
-        if annotation_id:
-            existing_query = storage_service.get_user_query(annotation_id, str(current_user_id), query_code)
+        if properties:
+            properties = bool(strtobool(properties))
         else:
-            existing_query = None
+            properties = True
 
-        if existing_query is None:
-            title = llm.generate_title(query_code)
-
-            if not response_data.get('nodes') and not response_data.get('edges'):
-                summary = 'No data found for the query'
-            else:
-                summary = llm.generate_summary(response_data) or 'Graph too big, could not summarize'
-
-            answer = llm.generate_summary(response_data, question, False, summary) if question else None
-            node_count = response_data['node_count']
-            edge_count = response_data['edge_count'] if "edge_count" in response_data else 0
-            node_count_by_label = response_data['node_count_by_label']
-            edge_count_by_label = response_data['edge_count_by_label'] if "edge_count_by_label" in response_data else []
-            if annotation_id is not None:
-                annotation = {"request": requests, "query": query_code, "summary": summary, "node_count": node_count, 
-                              "edge_count": edge_count, "node_types": node_types, "node_count_by_label": node_count_by_label,
-                              "edge_count_by_label": edge_count_by_label, "updated_at": datetime.datetime.now()}
-                storage_service.update(annotation_id, annotation)
-            else:
-                annotation = {"current_user_id": str(current_user_id), "request": requests, "query": query_code,
-                              "question": question, "answer": answer,
-                              "title": title, "summary": summary, "node_count": node_count,
-                              "edge_count": edge_count, "node_types": node_types, 
-                              "node_count_by_label": node_count_by_label, "edge_count_by_label": edge_count_by_label}
-                annotation_id = storage_service.save(annotation)
+        if limit:
+            try:
+                limit = int(limit)
+            except ValueError:
+                return jsonify({"error": "Invalid limit value. It should be an integer."}), 400
         else:
-            title, summary, annotation_id = '', '', ''
+            limit = None
+        try:
+            requests = data['requests']
+            annotation_id = None
+            question = None
+            answer = None
+            
+            if 'annotation_id' in requests:
+                annotation_id = requests['annotation_id'] 
+            
+            if 'question' in requests:
+                question = requests['question']
 
-        if existing_query:
-            title = existing_query.title
-            summary = existing_query.summary
-            annotation_id = existing_query.id
-            storage_service.update(annotation_id, {"updated_at": datetime.datetime.now()})
+            # Validate the request data before processing
+            node_map = validate_request(requests, schema_manager.schema)
+            if node_map is None:
+                return jsonify({"error": "Invalid node_map returned by validate_request"}), 400
 
-        
-        updated_data = storage_service.get_by_id(annotation_id)
+            #convert id to appropriate format
+            requests = db_instance.parse_id(requests)
+            
+            node_only, run_count = (True, False) if source == 'hypothesis' else (False, True)
 
-        response_data["title"] = title
-        response_data["summary"] = summary
-        response_data["annotation_id"] = str(annotation_id)
-        response_data["created_at"] = updated_data.created_at.isoformat()
-        response_data["updated_at"] = updated_data.updated_at.isoformat()
+            # Generate the query code
+            query_code = db_instance.query_Generator(requests, node_map, limit, node_only)
+            
+            # Run the query and parse the results
+            try:
+                result = await db_instance.run_query(query_code, run_count)
+                response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
+            finally:
+                await db_instance.close()
 
-        if question:
-            response_data["question"] = question
+            # Extract node types
+            nodes = requests['nodes']
+            node_types = set()
 
-        if answer:
-            response_data["answer"] = answer
+            for node in nodes:
+                node_types.add(node["type"])
 
-        if source=='ai-assistant':
-            response = {"annotation_id": str(annotation_id), "question": question, "answer": answer}
-            formatted_response = json.dumps(response, indent=4)
+            node_types = list(node_types)
+
+            if isinstance(query_code, list):
+                query_code = query_code[0]
+
+            if source == 'hypothesis':
+                response = {"nodes": response_data['nodes'], "edges": response_data['edges']}
+                formatted_response = json.dumps(response, indent=4)
+                return Response(formatted_response, mimetype='application/json')
+
+            if annotation_id:
+                existing_query = storage_service.get_user_query(annotation_id, str(current_user_id), query_code)
+            else:
+                existing_query = None
+
+            if existing_query is None:
+                title = llm.generate_title(query_code)
+
+                if not response_data.get('nodes') and not response_data.get('edges'):
+                    summary = 'No data found for the query'
+                else:
+                    summary = llm.generate_summary(response_data) or 'Graph too big, could not summarize'
+
+                answer = llm.generate_summary(response_data, question, False, summary) if question else None
+                node_count = response_data['node_count']
+                edge_count = response_data['edge_count'] if "edge_count" in response_data else 0
+                node_count_by_label = response_data['node_count_by_label']
+                edge_count_by_label = response_data['edge_count_by_label'] if "edge_count_by_label" in response_data else []
+                if annotation_id is not None:
+                    annotation = {"request": requests, "query": query_code, "summary": summary, "node_count": node_count, 
+                                  "edge_count": edge_count, "node_types": node_types, "node_count_by_label": node_count_by_label,
+                                  "edge_count_by_label": edge_count_by_label, "updated_at": datetime.datetime.now()}
+                    storage_service.update(annotation_id, annotation)
+                else:
+                    annotation = {"current_user_id": str(current_user_id), "request": requests, "query": query_code,
+                                  "question": question, "answer": answer,
+                                  "title": title, "summary": summary, "node_count": node_count,
+                                  "edge_count": edge_count, "node_types": node_types, 
+                                  "node_count_by_label": node_count_by_label, "edge_count_by_label": edge_count_by_label}
+                    annotation_id = storage_service.save(annotation)
+            else:
+                title, summary, annotation_id = '', '', ''
+
+            if existing_query:
+                title = existing_query.title
+                summary = existing_query.summary
+                annotation_id = existing_query.id
+                storage_service.update(annotation_id, {"updated_at": datetime.datetime.now()})
+
+            
+            updated_data = storage_service.get_by_id(annotation_id)
+
+            response_data["title"] = title
+            response_data["summary"] = summary
+            response_data["annotation_id"] = str(annotation_id)
+            response_data["created_at"] = updated_data.created_at.isoformat()
+            response_data["updated_at"] = updated_data.updated_at.isoformat()
+
+            if question:
+                response_data["question"] = question
+
+            if answer:
+                response_data["answer"] = answer
+
+            if source=='ai-assistant':
+                response = {"annotation_id": str(annotation_id), "question": question, "answer": answer}
+                formatted_response = json.dumps(response, indent=4)
+                return Response(formatted_response, mimetype='application/json')
+
+            # if limit:
+            #     response_data = limit_graph(response_data, limit)
+
+            formatted_response = json.dumps(response_data, indent=4)
+            logging.info(f"\n\n============== Query ==============\n\n{query_code}")
             return Response(formatted_response, mimetype='application/json')
-
-        # if limit:
-        #     response_data = limit_graph(response_data, limit)
-
-        formatted_response = json.dumps(response_data, indent=4)
-        logging.info(f"\n\n============== Query ==============\n\n{query_code}")
-        return Response(formatted_response, mimetype='application/json')
+        except Exception as e:
+            logging.error(f"Error processing query: {e}")
+            return jsonify({"error": str(e)}), 500
     except Exception as e:
         logging.error(f"Error processing query: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/email-query/<id>', methods=['POST'])
 @token_required
-def process_email_query(current_user_id, id):
+@async_route
+async def process_email_query(current_user_id, id):
     data = request.get_json()
     if 'email' not in data:
         return jsonify({"error": "Email missing"}), 400
-    @copy_current_request_context
-    def send_full_data():
-        try:
-            email = data['email']
-        
-            link = process_full_data(current_user_id=current_user_id, annotation_id=id)
-            
-            subject = 'Full Data'
-            body = f'Hello {email}. click this link {link} to download the full data you requested.'
-
-            send_email(subject, [email], body)
-        except Exception as e:
-            logging.error(f"Error processing query: {e}")
-
-    sender = threading.Thread(name='main_sender', target=send_full_data)
-    sender.start() 
-    return jsonify({'message': 'Email sent successfully'}), 200
+    
+    try:
+        email = data['email']
+        link = await process_full_data(current_user_id=current_user_id, annotation_id=id)
+        subject = 'Full Data'
+        body = f'Hello {email}. click this link {link} to download the full data you requested.'
+        send_email(subject, [email], body)
+        return jsonify({'message': 'Email sent successfully'}), 200
+    except Exception as e:
+        logging.error(f"Error processing query: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/history', methods=['GET'])
 @token_required
@@ -264,7 +284,8 @@ def process_user_history(current_user_id):
 
 @app.route('/annotation/<id>', methods=['GET'])
 @token_required
-def get_by_id(current_user_id, id):
+@async_route
+async def get_by_id(current_user_id, id):
     response_data = {}
     cursor = storage_service.get_by_id(id)
 
@@ -327,7 +348,7 @@ def get_by_id(current_user_id, id):
             return Response(formatted_response, mimetype='application/json')
         
         # Run the query and parse the results
-        result = db_instance.run_query(query, False)
+        result = await db_instance.run_query(query, run_count=False)
         response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
 
         if source == 'hypothesis':
@@ -355,7 +376,8 @@ def get_by_id(current_user_id, id):
 
 @app.route('/annotation/<id>', methods=['POST'])
 @token_required
-def process_by_id(current_user_id, id):
+@async_route
+async def process_by_id(current_user_id, id):
     data = request.get_json()
     if not data or 'requests' not in data:
         return jsonify({"error": "Missing requests data"}), 400
@@ -407,7 +429,7 @@ def process_by_id(current_user_id, id):
             response_data["question"] = question
         
         # Run the query and parse the results
-        result = db_instance.run_query(query, source)
+        result = await db_instance.run_query(query, run_count=False)
         response_data = db_instance.parse_and_serialize(result, schema_manager.schema, properties)
 
         answer = llm.generate_summary(response_data, question, False, summary) if question else None
@@ -425,9 +447,10 @@ def process_by_id(current_user_id, id):
 
 @app.route('/annotation/<id>/full', methods=['GET'])
 @token_required
-def process_full_annotation(current_user_id, id):
+@async_route
+async def process_full_annotation(current_user_id, id):
     try:
-        link = process_full_data(current_user_id=current_user_id, annotation_id=id)
+        link = await process_full_data(current_user_id=current_user_id, annotation_id=id)
         if link is None:
             return jsonify('No value Found'), 200
 
@@ -447,7 +470,7 @@ def serve_file(file_name):
     public_folder = os.path.join(os.getcwd(), 'public')
     return send_from_directory(public_folder, file_name)
 
-def process_full_data(current_user_id, annotation_id):
+async def process_full_data(current_user_id, annotation_id):
     cursor = storage_service.get_by_id(annotation_id)
 
     if cursor is None:
@@ -466,7 +489,7 @@ def process_full_data(current_user_id, annotation_id):
             return link
     
         # Run the query and parse the results
-        result = db_instance.run_query(query)
+        result = await db_instance.run_query(query)
         parsed_result = db_instance.convert_to_dict(result, schema_manager.schema)
 
         file_path = convert_to_csv(parsed_result, user_id= current_user_id, file_name=title)
@@ -536,6 +559,7 @@ def update_title(current_user_id, id):
 
 @app.route("/api/graph", methods=["POST"])
 @token_required
+@async_route
 async def process_graph(current_user_id):
     neo4j_conn = None
     try:
@@ -601,3 +625,5 @@ async def process_graph(current_user_id):
     finally:
         if neo4j_conn:
             neo4j_conn.close()
+
+

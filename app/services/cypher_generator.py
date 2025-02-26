@@ -7,6 +7,8 @@ from neo4j import AsyncGraphDatabase
 import glob
 import os
 from neo4j.graph import Node, Relationship
+from functools import wraps
+import asyncio
 
 load_dotenv()
 
@@ -14,17 +16,48 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def async_route(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        try:
+            result = loop.run_until_complete(f(*args, **kwargs))
+            return result
+        except Exception as e:
+            logging.error(f"Error in async route: {str(e)}")
+            raise
+    return wrapper
+
 class CypherQueryGenerator(QueryGeneratorInterface):
     def __init__(self, dataset_path: str):
-        self.driver = AsyncGraphDatabase.driver(
-            os.getenv('NEO4J_URI'),
-            auth=(os.getenv('NEO4J_USERNAME'), os.getenv('NEO4J_PASSWORD'))
-        )
+        self.uri = os.getenv('NEO4J_URI')
+        self.username = os.getenv('NEO4J_USERNAME')
+        self.password = os.getenv('NEO4J_PASSWORD')
+        self._driver = None
         # self.dataset_path = dataset_path
         # self.load_dataset(self.dataset_path)
 
-    def close(self):
-        self.driver.close()
+    @property
+    async def driver(self):
+        if self._driver is None:
+            self._driver = AsyncGraphDatabase.driver(
+                self.uri,
+                auth=(self.username, self.password),
+                max_connection_lifetime=3600,
+                max_connection_pool_size=50,
+                connection_acquisition_timeout=60
+            )
+        return self._driver
+
+    async def close(self):
+        if self._driver:
+            await self._driver.close()
+            self._driver = None
 
     async def load_dataset(self, path: str) -> None:
         if not os.path.exists(path):
@@ -58,32 +91,31 @@ class CypherQueryGenerator(QueryGeneratorInterface):
 
     async def run_query(self, query_code, run_count=True):
         results = []
-        if isinstance(query_code, list):
-            find_query = query_code[0]
-            total_count_query = query_code[1]
-            label_count_query = query_code[2]
-        else:
-            find_query = query_code
-            total_count_query = None
-            label_count_query = None
+        driver = await self.driver
         
-        async with self.driver.session() as session:
-            results.append(list(await session.run(find_query)))
-        if run_count:
-            if total_count_query:
-                try:
-                    async with self.driver.session() as session:
-                        results.append(list(await session.run(total_count_query)))
-                except:
-                    results.append([])
-            if label_count_query:
-                try:
-                    async with self.driver.session() as session:
-                        results.append(list(await session.run(label_count_query)))
-                except:
-                    results.append([])
-            return results
+        try:
+            async with driver.session() as session:
+                if isinstance(query_code, list):
+                    find_query, total_count_query, label_count_query = query_code
+                else:
+                    find_query, total_count_query, label_count_query = query_code, None, None
 
+                result = await session.run(find_query)
+                data = await result.data()
+                results.append(data)
+
+                if run_count and total_count_query:
+                    result = await session.run(total_count_query)
+                    data = await result.data()
+                    results.append(data)
+
+                    if label_count_query:
+                        result = await session.run(label_count_query)
+                        data = await result.data()
+                        results.append(data)
+        except Exception as e:
+            logging.error(f"Error in Neo4j query: {e}")
+            raise
         return results
 
     def query_Generator(self, requests, node_map, limit=None, node_only=False):
