@@ -113,16 +113,13 @@ class Neo4jConnection:
                         "name": f"{node_type} {raw_node_id}"
                     }
 
-                    # Add all properties from Neo4j node
                     for key, value in node_properties.items():
-                        # Skip synonyms field
                         if key == "synonyms":
                             continue
                         elif isinstance(value, (int, float)):
                             formatted_data[key] = str(value)
                         else:
                             formatted_data[key] = value
-
                     # Add gene_name to transcript nodes
                     if node_type == "transcript" and "gene_name" not in formatted_data:
                         # Find the gene node and get its gene_name
@@ -159,7 +156,6 @@ class Neo4jConnection:
         except Exception as e:
             print(f"Error getting graph data: {str(e)}")
             raise
-
 def group_edges(result_graph: Graph, request: Dict) -> List[Dict]:
     """Group edges by edge_id and handle any node types"""
     edge_groups = defaultdict(list)
