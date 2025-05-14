@@ -35,9 +35,9 @@ def update_task(annotation_id, graph=None):
         status = TaskStatus.PENDING.value
         # Get the cached data (Handle case where cache is None)
         cache = redis_client.get(str(annotation_id))
-
+        
         cache = json.loads(cache) if cache else {"graph": None, "status": status}
-
+        
         status = cache["status"]
         # Merge graph updates
         graph = graph if graph else cache["graph"]
@@ -50,10 +50,10 @@ def update_task(annotation_id, graph=None):
             AnnotationStorageService.update(annotation_id, {"status": status})
             redis_client.delete(f"{annotation_id}_tasks")
             return TaskStatus.COMPLETE.value
-
+        
         # Increment task count atomically and get the new count
         task_num = redis_client.incr(f"{annotation_id}_tasks")
-
+    
         if status in [TaskStatus.FAILED.value, TaskStatus.CANCELLED.value]:
             if task_num >= 4 and cache["status"] == TaskStatus.CANCELLED.value:
                 AnnotationStorageService.delete(annotation_id)
@@ -79,7 +79,7 @@ def update_task(annotation_id, graph=None):
             redis_client.set(
                 str(annotation_id), json.dumps({"graph": graph, "status": status})
             )
-
+        
         return status
 
 
@@ -92,7 +92,7 @@ def get_status(annotation_id):
             return status
         else:
             return TaskStatus.PENDING.value
-
+    
 
 def set_status(annotation_id, status):
     with app.config["annotation_lock"]:
@@ -143,7 +143,7 @@ def generate_summary(annotation_id, request, all_status, summary=None):
             {"status": status, "update": {"summary": summary}},
             to=str(annotation_id),
         )
-        return
+        return 
 
     if summary is not None:
         status = update_task(annotation_id)
@@ -153,15 +153,15 @@ def generate_summary(annotation_id, request, all_status, summary=None):
             to=str(annotation_id),
         )
         return
-
+    
     try:
-        meta_data = AnnotationStorageService.get_by_id(annotation_id)
+    meta_data = AnnotationStorageService.get_by_id(annotation_id)
         if not meta_data:
             raise ValueError(f"No metadata found for annotation {annotation_id}")
 
-        cache = redis_client.get(str(annotation_id))
-        if cache is not None:
-            cache = json.loads(cache)
+    cache = redis_client.get(str(annotation_id))
+    if cache is not None:
+        cache = json.loads(cache)
             graph = cache.get("graph")
             response = {
                 "nodes": graph["nodes"] if graph else [],
@@ -186,7 +186,7 @@ def generate_summary(annotation_id, request, all_status, summary=None):
             summary = "No data found in the graph"
         else:
             # Generate domain-aware summary using schema context
-            summary = llm.generate_summary(response, request)
+            summary = llm.generate_summary(response, request) 
             if not summary:
                 summary = "Unable to generate summary for this graph structure"
 
@@ -356,7 +356,7 @@ def generate_total_count(
         status = update_task(annotation_id)
         total_count_status.set()
         return
-
+    
     if get_status(annotation_id) == TaskStatus.FAILED.value:
         socketio.emit(
             "update",
@@ -368,13 +368,13 @@ def generate_total_count(
         status = update_task(annotation_id)
         total_count_status.set()
         return
-
+    
     annotation_threads = app.config["annotation_threads"]
     stop_event = annotation_threads[str(annotation_id)]
-
+    
     if stop_event.is_set():
         raise ThreadStopException("Stoping result generation thread")
-
+    
     if meta_data:
         status = update_task(annotation_id)
         socketio.emit(
@@ -390,7 +390,7 @@ def generate_total_count(
         )
         total_count_status.set()
         return
-
+        
     try:
 
         total_count = db_instance.run_query(count_query, stop_event)
@@ -508,7 +508,7 @@ def generate_label_count(
         socketio.emit("update", {"status": status, "update": update})
         count_label_status.set()
         return
-
+    
     if get_status(annotation_id) == TaskStatus.CANCELLED.value:
         update = generate_empty_label_count(requests, schema_manager)
         status = update_task(annotation_id)
@@ -524,7 +524,7 @@ def generate_label_count(
 
     annotation_threads = app.config["annotation_threads"]
     stop_event = annotation_threads[str(annotation_id)]
-
+    
     if stop_event.is_set():
         raise ThreadStopException("Stoping result generation thread")
 
@@ -617,7 +617,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
     try:
         # Initialize thread tracking
         annotation_threads = app.config["annotation_threads"]
-        annotation_threads[str(annotation_id)] = threading.Event()
+    annotation_threads[str(annotation_id)] = threading.Event()
 
         def process_annotation():
             time.sleep(0.1)  # Small delay to ensure proper initialization
@@ -631,7 +631,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
                 )
             except ThreadStopException:
                 logging.info(f"Thread stopped for annotation {annotation_id}")
-            except Exception as e:
+        except Exception as e:
                 logging.error(f"Error processing annotation {annotation_id}: {str(e)}")
 
         # Start processing thread
@@ -640,7 +640,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
         )
         processor.start()
 
-    except Exception as e:
+        except Exception as e:
         logging.error(f"Error starting thread for annotation {annotation_id}: {str(e)}")
         raise
 
@@ -660,7 +660,7 @@ def reset_task(annotation_id: str) -> None:
         # Reset status
         reset_status(annotation_id)
 
-    except Exception as e:
+        except Exception as e:
         logging.error(f"Error resetting task for annotation {annotation_id}: {str(e)}")
         raise
 
@@ -678,7 +678,7 @@ def reset_status(annotation_id: str) -> None:
                 "edge_count_by_label": None,
             },
         )
-    except Exception as e:
+        except Exception as e:
         logging.error(
             f"Error resetting status for annotation {annotation_id}: {str(e)}"
         )

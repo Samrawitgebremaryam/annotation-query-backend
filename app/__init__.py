@@ -7,7 +7,7 @@ from app.services.cypher_generator import CypherQueryGenerator
 from app.services.metta_generator import MeTTaQueryGenerator
 from db import mongo_init
 from app.lib.llm_handler import LLMHandler
-from app.persistence.annotation_storage import AnnotationStorageService
+from app.persistence.annotation_storage_service import AnnotationStorageService
 import os
 import logging
 import yaml
