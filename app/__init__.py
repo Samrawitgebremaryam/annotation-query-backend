@@ -2,12 +2,12 @@ from flask import Flask
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
-from app.services.schema_data import SchemaManager
+from app.services.schema_manager import SchemaManager
 from app.services.cypher_generator import CypherQueryGenerator
-from app.services.metta_generator import MeTTa_Query_Generator
+from app.services.metta_generator import MettaQueryGenerator
 from db import mongo_init
-from app.services.llm_handler import LLMHandler
-from app.persistence import AnnotationStorageService, UserStorageService
+from app.lib.llm_handler import LLMHandler
+from app.persistence.annotation_storage import AnnotationStorageService
 import os
 import logging
 import yaml
@@ -16,21 +16,32 @@ from app.error import ThreadStopException
 import threading
 from app.constants import TaskStatus, GRAPH_INFO_PATH
 import json
+import redis
+from typing import List, Dict
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins='*',
-                    async_mode='threading', logger=True, engineio_logger=True)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=True,
+    engineio_logger=True,
+)
 
-app.config['REDIS_URL'] = os.getenv('REDIS_URL')
+app.config["REDIS_URL"] = os.getenv("REDIS_URL")
 
-# intialize redis
-redis_client = FlaskRedis(app)
+# Initialize Redis client
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    db=0,
+)
+
 
 def load_config():
-    config_path = os.path.join(os.path.dirname(
-        __file__), '..', 'config', 'config.yaml')
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml")
     try:
-        with open(config_path, 'r') as file:
+        with open(config_path, "r") as file:
             config = yaml.safe_load(file)
         logging.info("Configuration loaded successfully.")
         return config
@@ -52,29 +63,71 @@ limiter = Limiter(
 
 mongo_init()
 
-databases = {
-    "metta": lambda: MeTTa_Query_Generator("./Data"),
-    "cypher": lambda: CypherQueryGenerator("./cypher_data")
+# Initialize database instance
+db_instance = CypherQueryGenerator(os.getenv("DATASET_PATH", "data/dataset"))
 
-    # Add other database instances here
-}
+# Initialize schema manager with database connection
+schema_manager = SchemaManager(db_instance=db_instance)
 
-database_type = config['database']['type']
-db_instance = databases[database_type]()
+# Generate initial schema from database
+try:
+    schema_manager.generate_schema_from_db()
+    logging.info("Schema generated successfully from database")
+except Exception as e:
+    app.logger.warning(
+        f"Could not generate schema from database: {e}. Using default schema."
+    )
 
-llm = LLMHandler()  # Initialize the LLMHandler
+# Initialize other components
+llm_handler = LLMHandler()
+metta_generator = MettaQueryGenerator(os.getenv("DATASET_PATH", "data/dataset"))
 
-app.config['llm_handler'] = llm
-app.config['annotation_threads'] = {} # holding the stop event for each annotation task
-app.config['annotation_lock'] = threading.Lock()
+# Set schema manager for query generators
+db_instance.set_schema_manager(schema_manager)
+metta_generator.set_schema_manager(schema_manager)
 
-schema_manager = SchemaManager(schema_config_path='./config/schema_config.yaml',
-                               biocypher_config_path='./config/biocypher_config.yaml',
-                               config_path='./config/schema')
+# Configure application
+app.config["llm_handler"] = llm_handler
+app.config["db_instance"] = db_instance
+app.config["schema_manager"] = schema_manager
+app.config["metta_generator"] = metta_generator
+app.config["annotation_threads"] = {}  # holding the stop event for each annotation task
+app.config["annotation_lock"] = threading.Lock()
 
-#load the json that holds the count for the edges
-graph_info = json.load(open(GRAPH_INFO_PATH))
+# Load graph info
+try:
+    graph_info = json.load(open(GRAPH_INFO_PATH))
+    app.config["graph_info"] = graph_info
+except Exception as e:
+    app.logger.warning(f"Could not load graph info: {e}")
+    app.config["graph_info"] = {}
+
+
+def refresh_schema():
+    """Refresh schema from database and update cache."""
+    try:
+        schema_manager.generate_schema_from_db()
+        logging.info("Schema refreshed successfully from database")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to refresh schema: {e}")
+        return False
+
 
 # Import routes at the end to avoid circular imports
 from app import routes
 from app.annotation_controller import handle_client_request, process_full_data, requery
+
+type_mapping = {
+    "String": "string",
+    "Integer": "integer",
+    "Float": "float",
+    "Boolean": "boolean",
+    "DateTime": "datetime",
+    # ... more types ...
+}
+
+
+def refresh_schema(self):
+    """Refresh schema from database and update cache."""
+    return self.generate_schema_from_db()

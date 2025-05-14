@@ -1,0 +1,179 @@
+# Generic Schema Configuration
+version: "1.0"
+
+# Property Types
+property_types:
+  string:
+    description: "Text value"
+    pattern: ".*"
+  integer:
+    description: "Whole number"
+    pattern: "^-?\\d+$"
+  float:
+    description: "Decimal number"
+    pattern: "^-?\\d*\\.?\\d+$"
+  boolean:
+    description: "True/False value"
+    pattern: "^(true|false)$"
+  datetime:
+    description: "Date and time"
+    pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:?\\d{2})?$"
+  list:
+    description: "List of values"
+  url:
+    description: "URL/URI"
+    pattern: "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$"
+  email:
+    description: "Email address"
+    pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+  identifier:
+    description: "Unique identifier"
+    pattern: "^[a-zA-Z0-9_-]+$"
+
+# Node Types
+nodes:
+  # Base entity type that all nodes can inherit from
+  entity:
+    label: Entity
+    description: Base type for all entities
+    properties:
+      id: identifier
+      name: string
+      description: string
+      created_at: datetime
+      updated_at: datetime
+      tags: list
+
+  # Biological data types (maintaining backward compatibility)
+  gene:
+    label: Gene
+    inherits: entity
+    identifier_field: gene_name
+    properties:
+      gene_name: string
+      gene_id: identifier
+      synonyms: list
+      chromosome: string
+      strand: string
+      start_position: integer
+      end_position: integer
+      biotype: string
+
+  transcript:
+    label: Transcript
+    inherits: entity
+    identifier_field: transcript_name
+    properties:
+      transcript_name: string
+      transcript_id: identifier
+      gene_id: identifier
+      length: integer
+      sequence: string
+
+  protein:
+    label: Protein
+    inherits: entity
+    identifier_field: protein_name
+    properties:
+      protein_name: string
+      protein_id: identifier
+      sequence: string
+      length: integer
+      molecular_weight: float
+
+  # Generic data types (examples)
+  document:
+    label: Document
+    inherits: entity
+    identifier_field: doc_id
+    properties:
+      doc_id: identifier
+      title: string
+      content: string
+      mime_type: string
+      size: integer
+      url: url
+      author: string
+      created_by: string
+      modified_by: string
+
+  person:
+    label: Person
+    inherits: entity
+    identifier_field: email
+    properties:
+      email: email
+      first_name: string
+      last_name: string
+      birth_date: datetime
+      phone: string
+      address: string
+      role: string
+
+  organization:
+    label: Organization
+    inherits: entity
+    identifier_field: org_id
+    properties:
+      org_id: identifier
+      legal_name: string
+      tax_id: string
+      industry: string
+      founded_date: datetime
+      website: url
+
+  location:
+    label: Location
+    inherits: entity
+    identifier_field: location_id
+    properties:
+      location_id: identifier
+      address: string
+      city: string
+      country: string
+      postal_code: string
+      latitude: float
+      longitude: float
+
+# Relationship Types
+relationships:
+  # Biological relationships
+  ENCODES:
+    description: Represents encoding relationship between genes and proteins
+    properties:
+      confidence: float
+      evidence: string
+
+  PART_OF:
+    description: Represents part-of relationship between biological entities
+    properties:
+      type: string
+      source: string
+
+  # Generic relationships
+  BELONGS_TO:
+    description: Represents ownership or membership
+    properties:
+      role: string
+      start_date: datetime
+      end_date: datetime
+
+  LOCATED_AT:
+    description: Represents physical location
+    properties:
+      since: datetime
+      until: datetime
+      type: string
+
+  CREATED_BY:
+    description: Represents creation relationship
+    properties:
+      timestamp: datetime
+      tool: string
+
+  RELATED_TO:
+    description: Generic relationship between entities
+    properties:
+      type: string
+      weight: float
+      tags: list

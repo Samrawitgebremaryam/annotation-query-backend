@@ -1,3 +1,114 @@
+# Generic Schema Configuration
+version: "1.0"
+
+# Node Types Configuration
+nodes:
+  # Example of biological nodes (for backward compatibility)
+  gene:
+    label: Gene
+    properties:
+      id: string
+      name: string
+      description: string
+
+  protein:
+    label: Protein
+    properties:
+      id: string
+      name: string
+      sequence: string
+
+  transcript:
+    label: Transcript
+    properties:
+      id: string
+      name: string
+
+  exon:
+    label: Exon
+    properties:
+      id: string
+      position: integer
+
+  promoter:
+    label: Promoter
+    properties:
+      id: string
+      sequence: string
+
+  # Example of generic nodes (can be extended)
+  document:
+    label: Document
+    properties:
+      id: string
+      title: string
+      content: string
+
+  person:
+    label: Person
+    properties:
+      id: string
+      name: string
+      email: string
+
+# Relationship Types Configuration
+relationships:
+  # Biological relationships
+  ENCODES:
+    source: [gene, transcript]
+    target: [protein]
+    properties:
+      confidence: float
+
+  CONTAINS:
+    source: [transcript]
+    target: [exon]
+    properties:
+      position: integer
+
+  REGULATES:
+    source: [promoter]
+    target: [gene]
+    properties:
+      mechanism: string
+
+  # Generic relationships (can be extended)
+  AUTHORED_BY:
+    source: [document]
+    target: [person]
+    properties:
+      date: datetime
+
+  REFERENCES:
+    source: [document]
+    target: [document]
+    properties:
+      context: string
+
+# Data Type Definitions
+data_types:
+  string:
+    python_type: str
+    default: ""
+  integer:
+    python_type: int
+    default: 0
+  float:
+    python_type: float
+    default: 0.0
+  boolean:
+    python_type: bool
+    default: false
+  datetime:
+    python_type: datetime
+    default: null
+  list:
+    python_type: list
+    default: []
+  dict:
+    python_type: dict
+    default: {}
+
 Title: BioCypher graph schema configuration file
 # ---
 # "Named Things"
@@ -175,9 +286,9 @@ structural variant:
   is_a: genomic variant
   inherit_properties: true
   properties:
-      variant_accession: str
-      variant_type: str
-      evidence: str
+    variant_accession: str
+    variant_type: str
+    evidence: str
 
 sequence variant:
   represented_as: node
@@ -493,7 +604,6 @@ subclass of:
   # target: ontology term
   # properties:
   #   rel_type: str
-
 
 cl capable of:
   is_a: annotation
@@ -904,7 +1014,6 @@ transcript_to_exon:
   input_label: includes
   source: transcript
   target: exon
-  properties: 
+  properties:
     source: str
     source_url: str
-

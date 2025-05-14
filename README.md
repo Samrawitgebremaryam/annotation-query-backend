@@ -1,3 +1,142 @@
+# Annotation Query Backend
+
+A flexible and generic annotation query system that supports both Cypher and MeTTa queries for any domain.
+
+## Overview
+
+This system has been refactored to be domain-agnostic, allowing it to work with any type of data model while maintaining backward compatibility with biological data. The system now uses a generic schema configuration that can be easily extended for different domains.
+
+## Key Features
+
+- Generic schema system supporting any domain
+- Flexible node and relationship types
+- Strong validation and type checking
+- Support for both Cypher and MeTTa queries
+- Backward compatibility with biological data
+- Extensible property types and validation rules
+
+## Schema Configuration
+
+The schema is defined in `config/schema/generic_schema.yaml` and includes:
+
+- Node types with inheritance support
+- Relationship types with source/target validation
+- Property types with validation rules
+- Support for custom validators
+
+Example node type:
+
+```yaml
+entity:
+  label: Entity
+  description: Base type for all entities
+  properties:
+    id: string
+    name: string
+    description: string
+```
+
+Example relationship type:
+
+```yaml
+RELATES_TO:
+  label: Relates To
+  description: Generic relationship between entities
+  source: [entity]
+  target: [entity]
+  properties:
+    type: string
+    weight: float
+```
+
+## Directory Structure
+
+```
+.
+├── app/
+│   ├── services/
+│   │   ├── schema_manager.py      # Generic schema management
+│   │   ├── cypher_generator.py    # Cypher query generation
+│   │   ├── metta_generator.py     # MeTTa query generation
+│   │   └── query_generator_interface.py
+│   ├── workers/
+│   │   └── task_handler.py        # Async task processing
+│   └── annotation_controller.py    # Main API controller
+├── config/
+│   └── schema/
+│       └── generic_schema.yaml    # Schema configuration
+└── storage/
+    └── graph/                     # Graph storage directory
+```
+
+## Usage
+
+1. Define your schema in `config/schema/generic_schema.yaml`
+2. Create nodes and relationships following the schema
+3. Use the API to query and annotate your data
+
+Example query request:
+
+```json
+{
+  "nodes": [
+    {
+      "type": "entity",
+      "id": "e1",
+      "properties": {
+        "name": "Example Entity",
+        "description": "An example entity"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "type": "RELATES_TO",
+      "source": "e1",
+      "target": "e2",
+      "properties": {
+        "weight": 0.8
+      }
+    }
+  ]
+}
+```
+
+## Validation
+
+The system performs comprehensive validation:
+
+- Node type validation
+- Relationship type validation
+- Property type validation
+- Source/target node validation
+- Custom validation rules
+
+## Error Handling
+
+Errors are returned with descriptive messages:
+
+```json
+{
+  "error": "Invalid request data",
+  "details": [
+    "Node missing required 'type' field",
+    "Invalid source node reference in relationship"
+  ]
+}
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add your changes
+4. Submit a pull request
+
+## License
+
+MIT License
+
 ### Annotaion Service
 
 backend API.
@@ -71,7 +210,6 @@ _Supported OS:_ **Linux & Mac**
    metta_data: Folder for storing Metta data.
    cypher_data: Folder for storing Neo4j data.
 
-
 7. **Choose Your Database Type**
    In the config directory modify config.yaml to change between databses.
 
@@ -84,6 +222,7 @@ _Supported OS:_ **Linux & Mac**
    database
     type = cypher  # Change to 'metta' if needed
    ```
+
 8. **Set Up MongoDB Database and LLM Keys**:
 
    Configure the `.env` file with the following settings:
@@ -133,18 +272,20 @@ flask run
    This will build the Docker image and run the container, exposing the application on port 5000.
 
 # Another Alternative, you can use Docker compose file to run the applicaton:
-  - Build and start the services with Docker Compose:
 
-    ```bash
-    docker-compose up --build
-    ```
-   This command will build the Flask app's Docker image, set up MongoDB with data persistence, and configure Caddy as the reverse proxy.
-   
-   ### Accessing the Application
+- Build and start the services with Docker Compose:
+
+  ```bash
+  docker-compose up --build
+  ```
+
+  This command will build the Flask app's Docker image, set up MongoDB with data persistence, and configure Caddy as the reverse proxy.
+
+### Accessing the Application
 
       - Flask App: Access the application through Caddy on http://localhost:5000.
 
-   ### Stopping the Services
+### Stopping the Services
 
       To stop the services, use:
 
@@ -152,8 +293,8 @@ flask run
       docker-compose down
 
 # Alternative, using bash script
- You can run the annotation service by executing ``run.sh`` file
 
+You can run the annotation service by executing `run.sh` file
 
 ## Prerequisites
 
@@ -163,18 +304,19 @@ Make sure you have the following installed:
 - Docker Compose
 - Bash shell (default on most Unix/Linux systems)
 
-There should be this environment variable in your .env file 
-   ```bash
-   APP_PORT=<the port on which the application will be exposed>
+There should be this environment variable in your .env file
 
-   DOCKER_HUB_REPO=<Docker Hub repository in the format {username}/{repository}>
+```bash
+APP_PORT=<the port on which the application will be exposed>
 
-   MONGODB_DOCKER_PORT=<the port on which MongoDB will be accessible inside the Docker container, typically 27017>
+DOCKER_HUB_REPO=<Docker Hub repository in the format {username}/{repository}>
 
-   CADDY_PORT=<the port on which Caddy will listen for incoming requests>
+MONGODB_DOCKER_PORT=<the port on which MongoDB will be accessible inside the Docker container, typically 27017>
 
-   CADDY_PORT_FORWARD=<the internal port inside the Docker container where Caddy forwards requests to>
-   ```
+CADDY_PORT=<the port on which Caddy will listen for incoming requests>
+
+CADDY_PORT_FORWARD=<the internal port inside the Docker container where Caddy forwards requests to>
+```
 
 ## Script Usage
 
@@ -228,6 +370,7 @@ sudo ./run.sh re-run
 ## Example Workflow
 
 1. **Start the Services**:
+
    ```bash
    sudo ./run.sh run
    ```
@@ -235,6 +378,7 @@ sudo ./run.sh re-run
 2. **Make Changes to Your Code**.
 
 3. **Rebuild and Push Changes**:
+
    ```bash
    sudo ./run.sh push
    ```
