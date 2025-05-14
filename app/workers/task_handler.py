@@ -170,7 +170,7 @@ def generate_summary(annotation_id, request, all_status, summary=None):
                 "edge_count": meta_data.edge_count,
                 "node_count_by_label": meta_data.node_count_by_label,
                 "edge_count_by_label": meta_data.edge_count_by_label,
-                "schema": schema_manager.schema  # Add schema for context-aware summarization
+                "schema": schema_manager.schema,  # Add schema for context-aware summarization
             }
         else:
             response = {
@@ -179,7 +179,7 @@ def generate_summary(annotation_id, request, all_status, summary=None):
                 "node_count": 0,
                 "edge_count": 0,
                 "node_count_by_label": [],
-                "edge_count_by_label": []
+                "edge_count_by_label": [],
             }
 
         if len(response["nodes"]) == 0:
@@ -565,13 +565,15 @@ def generate_label_count(
         # Validate counts against schema
         validated_counts = {
             "node_count_by_label": [
-                count for count in response["node_count_by_label"]
+                count
+                for count in response["node_count_by_label"]
                 if schema_manager.get_node_type(count["label"])
             ],
             "edge_count_by_label": [
-                count for count in response["edge_count_by_label"]
+                count
+                for count in response["edge_count_by_label"]
                 if schema_manager.get_relationship_type(count["label"])
-            ]
+            ],
         }
 
         AnnotationStorageService.update(annotation_id, validated_counts)
@@ -605,10 +607,7 @@ def generate_label_count(
                 "edge_count_by_label": update["edge_count_by_label"],
             },
         )
-        socketio.emit(
-            "update", 
-            {"status": TaskStatus.FAILED.value, "update": update}
-        )
+        socketio.emit("update", {"status": TaskStatus.FAILED.value, "update": update})
         count_label_status.set()
         logging.error("Error generating label count: %s", e)
 

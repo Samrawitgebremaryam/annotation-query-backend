@@ -4,7 +4,7 @@ from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
 from app.services.schema_manager import SchemaManager
 from app.services.cypher_generator import CypherQueryGenerator
-from app.services.metta_generator import MettaQueryGenerator
+from app.services.metta_generator import MeTTaQueryGenerator
 from db import mongo_init
 from app.lib.llm_handler import LLMHandler
 from app.persistence.annotation_storage import AnnotationStorageService
@@ -14,10 +14,10 @@ import yaml
 from flask_redis import FlaskRedis
 from app.error import ThreadStopException
 import threading
-from app.constants import TaskStatus, GRAPH_INFO_PATH
-import json
+from app.constants import TaskStatus
 import redis
 from typing import List, Dict
+from app.config import graph_info
 
 app = Flask(__name__)
 socketio = SocketIO(
@@ -80,7 +80,7 @@ except Exception as e:
 
 # Initialize other components
 llm_handler = LLMHandler()
-metta_generator = MettaQueryGenerator(os.getenv("DATASET_PATH", "data/dataset"))
+metta_generator = MeTTaQueryGenerator(os.getenv("DATASET_PATH", "data/dataset"))
 
 # Set schema manager for query generators
 db_instance.set_schema_manager(schema_manager)
@@ -93,14 +93,7 @@ app.config["schema_manager"] = schema_manager
 app.config["metta_generator"] = metta_generator
 app.config["annotation_threads"] = {}  # holding the stop event for each annotation task
 app.config["annotation_lock"] = threading.Lock()
-
-# Load graph info
-try:
-    graph_info = json.load(open(GRAPH_INFO_PATH))
-    app.config["graph_info"] = graph_info
-except Exception as e:
-    app.logger.warning(f"Could not load graph info: {e}")
-    app.config["graph_info"] = {}
+app.config["graph_info"] = graph_info
 
 
 def refresh_schema():
