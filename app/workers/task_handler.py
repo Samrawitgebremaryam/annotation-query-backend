@@ -129,7 +129,8 @@ def reset_task(annotation_id):
 def generate_summary(annotation_id, request, all_status, summary=None):
     """Generate a summary of the graph data using schema-aware processing."""
     result_done, total_count_done, label_count_done = all_status.values()
-    # wait for all threads to finish
+    
+    # Wait for all threads to finish
     result_done.wait()
     total_count_done.wait()
     label_count_done.wait()
@@ -155,13 +156,13 @@ def generate_summary(annotation_id, request, all_status, summary=None):
         return
     
     try:
-    meta_data = AnnotationStorageService.get_by_id(annotation_id)
+        meta_data = AnnotationStorageService.get_by_id(annotation_id)
         if not meta_data:
             raise ValueError(f"No metadata found for annotation {annotation_id}")
 
-    cache = redis_client.get(str(annotation_id))
-    if cache is not None:
-        cache = json.loads(cache)
+        cache = redis_client.get(str(annotation_id))
+        if cache is not None:
+            cache = json.loads(cache)
             graph = cache.get("graph")
             response = {
                 "nodes": graph["nodes"] if graph else [],
@@ -186,7 +187,7 @@ def generate_summary(annotation_id, request, all_status, summary=None):
             summary = "No data found in the graph"
         else:
             # Generate domain-aware summary using schema context
-            summary = llm.generate_summary(response, request) 
+            summary = llm.generate_summary(response, request)
             if not summary:
                 summary = "Unable to generate summary for this graph structure"
 
@@ -617,7 +618,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
     try:
         # Initialize thread tracking
         annotation_threads = app.config["annotation_threads"]
-    annotation_threads[str(annotation_id)] = threading.Event()
+        annotation_threads[str(annotation_id)] = threading.Event()
 
         def process_annotation():
             time.sleep(0.1)  # Small delay to ensure proper initialization
@@ -631,7 +632,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
                 )
             except ThreadStopException:
                 logging.info(f"Thread stopped for annotation {annotation_id}")
-        except Exception as e:
+            except Exception as e:
                 logging.error(f"Error processing annotation {annotation_id}: {str(e)}")
 
         # Start processing thread
@@ -640,7 +641,7 @@ def start_thread(annotation_id: str, args: Dict) -> None:
         )
         processor.start()
 
-        except Exception as e:
+    except Exception as e:
         logging.error(f"Error starting thread for annotation {annotation_id}: {str(e)}")
         raise
 
@@ -660,7 +661,7 @@ def reset_task(annotation_id: str) -> None:
         # Reset status
         reset_status(annotation_id)
 
-        except Exception as e:
+    except Exception as e:
         logging.error(f"Error resetting task for annotation {annotation_id}: {str(e)}")
         raise
 
@@ -678,7 +679,7 @@ def reset_status(annotation_id: str) -> None:
                 "edge_count_by_label": None,
             },
         )
-        except Exception as e:
+    except Exception as e:
         logging.error(
             f"Error resetting status for annotation {annotation_id}: {str(e)}"
         )
