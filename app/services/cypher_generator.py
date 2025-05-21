@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict, Optional, Any
 import logging
 from dotenv import load_dotenv
 import neo4j
@@ -9,6 +9,7 @@ import os
 from neo4j.graph import Node, Relationship
 from app.error import ThreadStopException
 import json
+from .schema_manager import DynamicSchemaManager
 
 load_dotenv()
 
@@ -23,11 +24,14 @@ class CypherQueryGenerator(QueryGeneratorInterface):
             os.getenv("NEO4J_URI"),
             auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD")),
         )
+        self.schema_manager = DynamicSchemaManager(self.driver)
         # self.dataset_path = dataset_path
         # self.load_dataset(self.dataset_path)
 
     def close(self):
         self.driver.close()
+        if hasattr(self, "schema_manager"):
+            self.schema_manager = None
 
     def load_dataset(self, path: str) -> None:
         if not os.path.exists(path):
