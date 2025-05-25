@@ -2,16 +2,47 @@ from elasticsearch import Elasticsearch
 from typing import List, Dict, Optional
 import logging
 from app.services.schema_manager import DynamicSchemaManager
+import os
+import yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class AutocompleteService:
-    def __init__(self, es_host: str = "localhost", es_port: int = 9200):
-        self.es = Elasticsearch([{"host": es_host, "port": es_port}])
+    def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
+       
         self.index_name = "node_properties"
+
+        # Load configuration
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+        except FileNotFoundError:
+            logger.warning(
+                f"Config file {config_path} not found, using default configuration"
+            )
+            config = {
+                "elasticsearch": {
+                    "hosts": ["http://localhost:9200"],
+                    "verify_certs": False,
+                }
+            }
+
+        # Initialize Elasticsearch client with configuration
+        es_config = config.get("elasticsearch", {})
+        self.es = Elasticsearch(
+            hosts=es_config.get("hosts", ["http://localhost:9200"]),
+            verify_certs=es_config.get("verify_certs", False),
+            timeout=es_config.get("timeout", 30),
+            retry_on_timeout=es_config.get("retry_on_timeout", True),
+            max_retries=es_config.get("max_retries", 3),
+        )
+
+        # Set up the index
         self._setup_index()
+
+        logging.info("AutocompleteService initialized successfully")
 
     def _setup_index(self):
         """Setup the Elasticsearch index with search-as-you-type mapping"""
