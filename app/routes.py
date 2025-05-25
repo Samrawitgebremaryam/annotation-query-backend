@@ -21,6 +21,7 @@ from app.annotation_controller import handle_client_request, process_full_data, 
 from app.constants import TaskStatus
 from app.workers.task_handler import get_annotation_redis
 from app.persistence import AnnotationStorageService
+from app.services.autocomplete_service import AutocompleteService
 
 # Load environmental variables
 load_dotenv()
@@ -35,6 +36,9 @@ llm = app.config["llm_handler"]
 EXP = os.getenv("REDIS_EXPIRATION", 3600)  # expiration time of redis cache
 
 CORS(app)
+
+# Initialize autocomplete service
+autocomplete_service = AutocompleteService()
 
 
 # Simplified socket handling
@@ -697,4 +701,26 @@ def delete_many():
         return Response(formatted_response, mimetype="application/json")
     except Exception as e:
         logging.error(f"Error deleting annotations: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/autocomplete", methods=["GET"])
+def get_autocomplete_suggestions():
+    """Get autocomplete suggestions for node properties"""
+    try:
+        query = request.args.get("query", "")
+        node_type = request.args.get("node_type")
+        property_name = request.args.get("property_name")
+        size = int(request.args.get("size", 10))
+
+        if not query:
+            return jsonify({"error": "Query parameter is required"}), 400
+
+        suggestions = autocomplete_service.search_suggestions(
+            query=query, node_type=node_type, property_name=property_name, size=size
+        )
+
+        return jsonify({"suggestions": suggestions, "total": len(suggestions)})
+    except Exception as e:
+        logger.error(f"Error in autocomplete endpoint: {e}")
         return jsonify({"error": str(e)}), 500
