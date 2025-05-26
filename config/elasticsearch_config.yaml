@@ -1,23 +1,22 @@
 elasticsearch:
-  # List of Elasticsearch hosts - can be multiple for high availability
   hosts:
     - https://localhost:9200
-    # Add more hosts as needed:
-    # - https://elasticsearch2:9200
-    # - https://elasticsearch3:9200
-
-  # SSL/TLS settings
-  verify_certs: false # Set to true in production with proper certificates
-  ssl_show_warn: false # Set to true in production
-
-  # Connection settings
-  timeout: 30 # seconds
+  timeout: 30
   retry_on_timeout: true
   max_retries: 3
+  settings:
+    number_of_shards: 1
+    number_of_replicas: 0
+    refresh_interval: "1s"
 
   # Authentication settings
   username: elastic
   password: tFlDKvL3sM162HsUOoz* # Change this to your actual password
+
+  # SSL/TLS settings
+  verify_certs: false  # Disable SSL verification for development
+  ssl_show_warn: false # Suppress SSL warnings
+  use_ssl: true       # Enable SSL
 
   host: localhost
   port: 9200

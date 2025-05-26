@@ -17,50 +17,81 @@ class DynamicSchemaManager:
         """Discover the complete schema from the database"""
         try:
             with self.driver.session() as session:
-                # Get all node labels and their properties
+                # Get all node labels
                 node_query = """
-                CALL apoc.meta.schema()
-                YIELD value
-                RETURN value
+                MATCH (n)
+                WITH DISTINCT labels(n) as labels
+                UNWIND labels as label
+                RETURN DISTINCT label
                 """
                 result = session.run(node_query)
-                raw_schema = result.single()["value"]
+                labels = [record["label"] for record in result]
+                logger.info(f"Discovered node labels: {labels}")
 
-                # Transform raw schema into our structured format
-                self._build_structured_schema(raw_schema)
+                # For each label, get its properties
+                for label in labels:
+                    prop_query = f"""
+                    MATCH (n:{label})
+                    WITH n LIMIT 1000
+                    UNWIND keys(n) as prop
+                    RETURN DISTINCT prop
+                    """
+                    prop_result = session.run(prop_query)
+                    properties = [record["prop"] for record in prop_result]
+                    logger.info(f"Discovered properties for {label}: {properties}")
+
+                    # Build schema for this label
+                    self.schema[label] = {
+                        "represented_as": "node",
+                        "input_label": label,
+                        "properties": self._process_properties(
+                            {prop: {"type": "str"} for prop in properties}
+                        ),
+                    }
 
                 # Discover relationships
                 self._discover_relationships()
 
-                # Build inheritance tree
-                self._build_inheritance_tree()
-
-                logger.info("Schema discovery completed successfully")
+                logger.info(
+                    f"Schema discovery completed. Found {len(self.schema)} types"
+                )
+                logger.info(f"Schema: {self.schema}")
         except Exception as e:
             logger.error(f"Error discovering schema: {e}")
             raise
 
-    def _build_structured_schema(self, raw_schema: Dict):
-        """Build structured schema from raw database schema"""
-        for label, properties in raw_schema.items():
-            if properties.get("type") == "node":
-                self.schema[label] = {
-                    "represented_as": "node",
-                    "input_label": label,
-                    "properties": self._process_properties(
-                        properties.get("properties", {})
-                    ),
-                }
-
     def _process_properties(self, properties: Dict) -> Dict:
         """Process raw properties into schema format"""
         processed = {}
+
+        # Define property name mappings for different node types
+        property_mappings = {
+            "Gene": {"name": "gene_name"},
+            "Transcript": {"name": "transcript_name"},
+            # Add more mappings as needed
+        }
+
         for prop_name, prop_info in properties.items():
-            processed[prop_name] = {
+            # Get the node type from the current context
+            node_type = None
+            for type_name, type_info in self.schema.items():
+                if type_info.get("properties") == properties:
+                    node_type = type_name
+                    break
+
+            # Map property name if a mapping exists for this node type
+            if node_type in property_mappings:
+                mapped_name = property_mappings[node_type].get(prop_name, prop_name)
+            else:
+                mapped_name = prop_name
+
+            processed[mapped_name] = {
                 "type": prop_info.get("type", "str"),
-                "is_identifier": prop_name.lower() in ["id", "identifier"],
-                "is_display_name": prop_name.lower() in ["name", "title", "label"],
+                "is_identifier": mapped_name.lower() in ["id", "identifier"],
+                "is_display_name": mapped_name.lower()
+                in ["name", "title", "label", "gene_name", "transcript_name"],
             }
+
         return processed
 
     def _discover_relationships(self):
@@ -98,36 +129,6 @@ class DynamicSchemaManager:
                             {p: {"type": "str"} for p in props}
                         ),
                     }
-
-    def _build_inheritance_tree(self):
-        """Build inheritance tree based on property patterns"""
-        property_patterns = {}
-        for type_name, type_def in self.schema.items():
-            if type_def.get("represented_as") == "node":
-                props = frozenset(type_def["properties"].keys())
-                if props not in property_patterns:
-                    property_patterns[props] = []
-                property_patterns[props].append(type_name)
-
-        # Create inheritance based on property patterns
-        for pattern, types in property_patterns.items():
-            if len(types) > 1:
-                common_props = set.intersection(
-                    *[set(self.schema[t]["properties"].keys()) for t in types]
-                )
-                if common_props:
-                    base_type = f"{types[0]}_base"
-                    self.schema[base_type] = {
-                        "represented_as": "node",
-                        "input_label": base_type,
-                        "properties": {
-                            p: self.schema[types[0]]["properties"][p]
-                            for p in common_props
-                        },
-                    }
-
-                    for t in types:
-                        self.schema[t]["is_a"] = base_type
 
     def get_node_type(self, type_name: str) -> Dict:
         """Get schema for a node type"""
