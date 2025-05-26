@@ -4,6 +4,12 @@ import logging
 from app.services.schema_manager import DynamicSchemaManager
 import os
 import yaml
+import time
+from elasticsearch.exceptions import (
+    ConnectionError,
+    ConnectionTimeout,
+    AuthenticationException,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,63 +17,153 @@ logger = logging.getLogger(__name__)
 
 class AutocompleteService:
     def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
-       
         self.index_name = "node_properties"
+        self.max_retries = 3
+        self.retry_delay = 2  # seconds
+        self.config_path = config_path
 
-        # Load configuration
-        try:
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f)
-        except FileNotFoundError:
-            logger.warning(
-                f"Config file {config_path} not found, using default configuration"
-            )
-            config = {
-                "elasticsearch": {
-                    "hosts": ["http://localhost:9200"],
-                    "verify_certs": False,
-                }
-            }
+        # Initialize Elasticsearch client with retry logic
+        self.es = None
+        self._initialize_elasticsearch()
 
-        # Initialize Elasticsearch client with configuration
-        es_config = config.get("elasticsearch", {})
-        self.es = Elasticsearch(
-            hosts=es_config.get("hosts", ["http://localhost:9200"]),
-            verify_certs=es_config.get("verify_certs", False),
-            timeout=es_config.get("timeout", 30),
-            retry_on_timeout=es_config.get("retry_on_timeout", True),
-            max_retries=es_config.get("max_retries", 3),
-        )
+        # Set up the index only if we have a valid connection
+        if self.es is not None:
+            self._setup_index()
+            logger.info("AutocompleteService initialized successfully")
+        else:
+            logger.error("Failed to initialize Elasticsearch client")
 
-        # Set up the index
-        self._setup_index()
+    def _initialize_elasticsearch(self):
+        """Initialize Elasticsearch client with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                # Try to load configuration from file first
+                try:
+                    with open(self.config_path, "r") as f:
+                        config = yaml.safe_load(f)
+                        es_config = config.get("elasticsearch", {})
+                except FileNotFoundError:
+                    logger.warning(
+                        f"Config file {self.config_path} not found, using environment variables"
+                    )
+                    es_config = {}
 
-        logging.info("AutocompleteService initialized successfully")
+                # Get configuration from environment variables or use defaults
+                es_host = os.getenv(
+                    "ELASTICSEARCH_HOST", es_config.get("host", "localhost")
+                )
+                es_port = os.getenv("ELASTICSEARCH_PORT", es_config.get("port", "9200"))
+                es_username = os.getenv(
+                    "ELASTICSEARCH_USERNAME", es_config.get("username", "elastic")
+                )
+                es_password = os.getenv(
+                    "ELASTICSEARCH_PASSWORD", es_config.get("password", "changeme")
+                )
+
+                # Initialize client with HTTPS and authentication
+                client = Elasticsearch(
+                    [f"https://{es_host}:{es_port}"],
+                    basic_auth=(es_username, es_password),
+                    verify_certs=False,  # Set to True in production
+                    ssl_show_warn=False,  # Set to True in production
+                    request_timeout=30,
+                    retry_on_timeout=True,
+                    max_retries=3,
+                )
+
+                # Test connection
+                if client.ping():
+                    logger.info(
+                        f"Successfully connected to Elasticsearch at {es_host}:{es_port}"
+                    )
+                    self.es = client
+                    return
+
+            except AuthenticationException as e:
+                logger.error(f"Authentication failed: {e}")
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"Retrying authentication (attempt {attempt + 1}/{self.max_retries})"
+                    )
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        "Failed to authenticate with Elasticsearch after all attempts"
+                    )
+                    return
+            except (ConnectionError, ConnectionTimeout) as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"Failed to connect to Elasticsearch (attempt {attempt + 1}/{self.max_retries}): {e}"
+                    )
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        f"Failed to connect to Elasticsearch after {self.max_retries} attempts: {e}"
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Unexpected error initializing Elasticsearch: {e}")
+                return
 
     def _setup_index(self):
         """Setup the Elasticsearch index with search-as-you-type mapping"""
-        if not self.es.indices.exists(index=self.index_name):
-            mapping = {
-                "mappings": {
-                    "properties": {
-                        "node_type": {"type": "keyword"},
-                        "property_name": {"type": "keyword"},
-                        "property_value": {"type": "search_as_you_type"},
-                        "property_value._2gram": {"type": "search_as_you_type"},
-                        "property_value._3gram": {"type": "search_as_you_type"},
-                        "property_value._4gram": {"type": "search_as_you_type"},
-                    }
+        if self.es is None:
+            logger.error("Cannot setup index: Elasticsearch client is not initialized")
+            return
+
+        try:
+            if not self.es.indices.exists(index=self.index_name):
+                mapping = {
+                    "mappings": {
+                        "properties": {
+                            "node_type": {"type": "keyword"},
+                            "property_name": {"type": "keyword"},
+                            "property_value": {
+                                "type": "search_as_you_type",
+                                "analyzer": "autocomplete",
+                                "search_analyzer": "autocomplete_search",
+                            },
+                        }
+                    },
+                    "settings": {
+                        "analysis": {
+                            "analyzer": {
+                                "autocomplete": {
+                                    "tokenizer": "autocomplete",
+                                    "filter": ["lowercase"],
+                                },
+                                "autocomplete_search": {"tokenizer": "lowercase"},
+                            },
+                            "tokenizer": {
+                                "autocomplete": {
+                                    "type": "edge_ngram",
+                                    "min_gram": 1,
+                                    "max_gram": 20,
+                                    "token_chars": ["letter"],
+                                }
+                            },
+                        }
+                    },
                 }
-            }
-            self.es.indices.create(index=self.index_name, body=mapping)
-            logger.info(
-                f"Created index {self.index_name} with search-as-you-type mapping"
-            )
+                self.es.indices.create(index=self.index_name, body=mapping)
+                logger.info(
+                    f"Created index {self.index_name} with search-as-you-type mapping"
+                )
+        except Exception as e:
+            logger.error(f"Error setting up index: {e}")
+            raise
 
     def index_node_property(
         self, node_type: str, property_name: str, property_value: str
     ):
         """Index a node property for autocomplete"""
+        if self.es is None:
+            logger.error(
+                "Cannot index property: Elasticsearch client is not initialized"
+            )
+            return
+
         try:
             doc = {
                 "node_type": node_type,
@@ -80,6 +176,10 @@ class AutocompleteService:
 
     def bulk_index_properties(self, properties: List[Dict]):
         """Bulk index multiple properties for better performance"""
+        if self.es is None:
+            logger.error("Cannot bulk index: Elasticsearch client is not initialized")
+            return
+
         try:
             actions = []
             for prop in properties:
@@ -108,6 +208,12 @@ class AutocompleteService:
         size: int = 10,
     ) -> List[Dict]:
         """Search for autocomplete suggestions using search-as-you-type"""
+        if self.es is None:
+            logger.error(
+                "Cannot search suggestions: Elasticsearch client is not initialized"
+            )
+            return []
+
         try:
             search_query = {
                 "query": {
@@ -120,6 +226,7 @@ class AutocompleteService:
                             "property_value._3gram",
                             "property_value._4gram",
                         ],
+                        "analyzer": "autocomplete_search",
                     }
                 }
             }
@@ -156,6 +263,10 @@ class AutocompleteService:
 
     def reindex_from_schema(self, schema_manager: DynamicSchemaManager):
         """Reindex all properties from the schema manager"""
+        if self.es is None:
+            logger.error("Cannot reindex: Elasticsearch client is not initialized")
+            return
+
         try:
             # Get all node types and their properties
             for node_type, node_schema in schema_manager.schema.items():

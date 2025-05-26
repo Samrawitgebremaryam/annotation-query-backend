@@ -1,23 +1,27 @@
 elasticsearch:
   # List of Elasticsearch hosts - can be multiple for high availability
   hosts:
-    - http://localhost:9200
+    - https://localhost:9200
     # Add more hosts as needed:
-    # - http://elasticsearch2:9200
-    # - http://elasticsearch3:9200
+    # - https://elasticsearch2:9200
+    # - https://elasticsearch3:9200
 
   # SSL/TLS settings
   verify_certs: false # Set to true in production with proper certificates
+  ssl_show_warn: false # Set to true in production
 
   # Connection settings
   timeout: 30 # seconds
   retry_on_timeout: true
   max_retries: 3
 
-  # Optional: Authentication settings
-  # username: elastic
-  # password: your_password
+  # Authentication settings
+  username: elastic
+  password: tFlDKvL3sM162HsUOoz* # Change this to your actual password
 
-  # Optional: Cloud settings (if using Elastic Cloud)
-  # cloud_id: your_cloud_id
-  # api_key: your_api_key
+  host: localhost
+  port: 9200
+  settings:
+    number_of_shards: 1
+    number_of_replicas: 0
+    refresh_interval: "1s"
