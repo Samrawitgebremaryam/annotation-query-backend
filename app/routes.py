@@ -708,12 +708,13 @@ def delete_many():
 def get_suggestions():
     """Get autocomplete suggestions for a query string."""
     try:
-        query = request.args.get("q", "")
+        # Try to get query from either 'q' or 'query' parameter
+        query = request.args.get("q") or request.args.get("query", "")
         label = request.args.get("label")
         size = request.args.get("size", 10, type=int)
 
         if not query:
-            return jsonify({"error": "Query parameter 'q' is required"}), 400
+            return jsonify({"error": "Query parameter 'q' or 'query' is required"}), 400
 
         suggestions = autocomplete_service.search_suggestions(
             query=query, label=label, size=size
