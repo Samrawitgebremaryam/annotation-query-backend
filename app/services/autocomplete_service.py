@@ -112,13 +112,15 @@ class AutocompleteService:
                             "analyzer": "autocomplete",
                             "search_analyzer": "standard",
                         },
-                        "name.suggest": {
+                        "name_suggest": {
                             "type": "completion",
                             "analyzer": "simple",
                             "preserve_separators": True,
                             "preserve_position_increments": True,
                             "max_input_length": 50,
-                            "contexts": {"label": {"type": "category"}},
+                            "contexts": {
+                                "label": {"type": "category", "path": "labels"}
+                            },
                         },
                         "labels": {"type": "keyword"},
                         "name_field": {"type": "keyword"},
@@ -137,7 +139,7 @@ class AutocompleteService:
         try:
             doc = {
                 "name": name,
-                "name.suggest": {
+                "name_suggest": {
                     "input": [name.lower()],
                     "weight": 10,
                     "contexts": {"label": labels},
@@ -160,7 +162,7 @@ class AutocompleteService:
                     "_index": self.index_name,
                     "_source": {
                         "name": node["name"],
-                        "name.suggest": {
+                        "name_suggest": {
                             "input": [node["name"].lower()],
                             "weight": 10,
                             "contexts": {"label": node["labels"]},
@@ -219,7 +221,7 @@ class AutocompleteService:
                     "name_suggest": {
                         "prefix": query.lower(),
                         "completion": {
-                            "field": "name.suggest",
+                            "field": "name_suggest",
                             "size": size,
                             "skip_duplicates": True,
                             "fuzzy": {"fuzziness": "AUTO"},
