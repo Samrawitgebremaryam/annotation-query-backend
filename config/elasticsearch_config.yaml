@@ -1,0 +1,21 @@
+elasticsearch:
+  hosts:
+    - http://localhost:9200
+  timeout: 30
+  retry_on_timeout: true
+  max_retries: 3
+  settings:
+    number_of_shards: 1
+    number_of_replicas: 0
+    refresh_interval: "1s"
+
+  # Authentication settings
+  username: elastic
+  password: tFlDKvL3sM162HsUOoz* # Change this to your actual password
+
+  host: localhost
+  port: 9200
+  settings:
+    number_of_shards: 1
+    number_of_replicas: 0
+    refresh_interval: "1s"
