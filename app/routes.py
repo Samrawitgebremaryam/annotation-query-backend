@@ -706,21 +706,44 @@ def delete_many():
 
 @app.route("/api/autocomplete", methods=["GET"])
 def get_autocomplete_suggestions():
-    """Get autocomplete suggestions for node properties"""
     try:
         query = request.args.get("query", "")
         node_type = request.args.get("node_type")
-        property_name = request.args.get("property_name")
         size = int(request.args.get("size", 10))
 
         if not query:
-            return jsonify({"error": "Query parameter is required"}), 400
+            return jsonify({"suggestions": [], "total": 0})
 
         suggestions = autocomplete_service.search_suggestions(
-            query=query, node_type=node_type, property_name=property_name, size=size
+            query=query, node_type=node_type, size=size
         )
 
         return jsonify({"suggestions": suggestions, "total": len(suggestions)})
+
     except Exception as e:
-        logger.error(f"Error in autocomplete endpoint: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"Error in autocomplete endpoint: {e}")
+        return jsonify({"error": str(e), "suggestions": [], "total": 0}), 500
+
+
+@app.route("/api/autocomplete/reindex", methods=["POST"])
+def reindex_autocomplete():
+    try:
+        from app.services.schema_manager import DynamicSchemaManager
+        from app.services.cypher_generator import CypherQueryGenerator
+
+        # Initialize schema manager and reindex
+        cypher_generator = CypherQueryGenerator(dataset_path="cypher_data")
+        schema_manager = DynamicSchemaManager(cypher_generator.driver)
+
+        success = autocomplete_service.force_reindex(schema_manager)
+
+        if success:
+            return jsonify(
+                {"message": "Reindexing completed successfully", "status": "success"}
+            )
+        else:
+            return jsonify({"message": "Reindexing failed", "status": "error"}), 500
+
+    except Exception as e:
+        logging.error(f"Error during reindexing: {e}")
+        return jsonify({"error": str(e), "status": "error"}), 500

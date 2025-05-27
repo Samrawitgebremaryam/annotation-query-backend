@@ -203,7 +203,6 @@ class AutocompleteService:
         self,
         query: str,
         node_type: Optional[str] = None,
-        property_name: Optional[str] = None,
         size: int = 10,
     ) -> List[Dict]:
         if self.es is None:
@@ -211,67 +210,39 @@ class AutocompleteService:
             return []
 
         try:
-            # Define property name mappings for different node types
-            property_mappings = {
-                "Gene": {"name": "gene_name"},
-                "Transcript": {"name": "transcript_name"},
-                "Protein": {"name": "protein_name"},
+            # Define the name fields for each node type
+            name_fields = {
+                "Gene": "gene_name",
+                "Transcript": "transcript_name",
+                "Protein": "protein_name",
                 # Add more mappings as needed
             }
 
-            must_conditions = []
+            # Build the query
+            should_conditions = []
 
-            # Add query condition
-            must_conditions.append(
-                {
-                    "bool": {
-                        "should": [
-                            {
-                                "prefix": {
-                                    "property_value": {
-                                        "value": query.lower(),
-                                        "case_insensitive": True,
-                                    }
-                                }
-                            },
-                            {
-                                "prefix": {
-                                    "property_value.keyword": {
-                                        "value": query.upper(),
-                                        "case_insensitive": True,
-                                    }
-                                }
-                            },
-                        ]
+            # If node_type is specified, search only in that type's name field
+            if node_type and node_type in name_fields:
+                should_conditions.append(
+                    {
+                        "match_phrase_prefix": {
+                            name_fields[node_type]: {"query": query, "slop": 1}
+                        }
                     }
-                }
-            )
-
-            # If node_type is specified, add it to conditions
-            if node_type:
-                must_conditions.append({"term": {"node_type": node_type}})
-
-                # If property_name is specified, map it to the correct property name
-                if property_name and node_type in property_mappings:
-                    mapped_property = property_mappings[node_type].get(
-                        property_name, property_name
+                )
+            else:
+                # Search in all name fields
+                for field in name_fields.values():
+                    should_conditions.append(
+                        {"match_phrase_prefix": {field: {"query": query, "slop": 1}}}
                     )
-                    must_conditions.append({"term": {"property_name": mapped_property}})
-
-            # If only property_name is specified (general search)
-            elif property_name:
-                # Check if property_name is a mapped property
-                for node_type, mappings in property_mappings.items():
-                    if property_name in mappings.values():
-                        must_conditions.append(
-                            {"term": {"property_name": property_name}}
-                        )
-                        break
 
             search_query = {
-                "query": {"bool": {"must": must_conditions}},
+                "query": {
+                    "bool": {"should": should_conditions, "minimum_should_match": 1}
+                },
                 "size": size,
-                "sort": [{"_score": "desc"}, {"property_value.keyword": "asc"}],
+                "sort": [{"_score": "desc"}],
             }
 
             logger.info(f"Executing search query: {search_query}")
@@ -281,13 +252,28 @@ class AutocompleteService:
             suggestions = []
             for hit in response["hits"]["hits"]:
                 source = hit["_source"]
-                suggestions.append(
-                    {
-                        "node_type": source["node_type"],
-                        "property_name": source["property_name"],
-                        "property_value": source["property_value"],
-                    }
-                )
+                # Determine which name field was matched
+                matched_field = None
+                for field in name_fields.values():
+                    if field in source:
+                        matched_field = field
+                        break
+
+                if matched_field:
+                    suggestions.append(
+                        {
+                            "node_type": next(
+                                (
+                                    k
+                                    for k, v in name_fields.items()
+                                    if v == matched_field
+                                ),
+                                None,
+                            ),
+                            "name": source[matched_field],
+                            "score": hit["_score"],
+                        }
+                    )
 
             logger.info(f"Found {len(suggestions)} suggestions for query: {query}")
             return suggestions
@@ -306,51 +292,64 @@ class AutocompleteService:
                 self.es.indices.delete(index=self.index_name)
                 logger.info(f"Deleted existing index {self.index_name}")
 
-            self._setup_index()
+            # Create index with proper mappings
+            mappings = {
+                "mappings": {
+                    "properties": {
+                        "gene_name": {
+                            "type": "text",
+                            "fields": {"keyword": {"type": "keyword"}},
+                        },
+                        "transcript_name": {
+                            "type": "text",
+                            "fields": {"keyword": {"type": "keyword"}},
+                        },
+                        "protein_name": {
+                            "type": "text",
+                            "fields": {"keyword": {"type": "keyword"}},
+                        },
+                        # Add more name fields as needed
+                    }
+                }
+            }
+            self.es.indices.create(index=self.index_name, body=mappings)
             logger.info("Created new index with mappings")
 
-            total_indexed = 0
-            for node_type, node_schema in schema_manager.schema.items():
-                if node_schema.get("represented_as") == "node":
-                    properties = node_schema.get("properties", {})
-                    logger.info(
-                        f"Processing node type: {node_type} with properties: {list(properties.keys())}"
-                    )
+            # Define name fields for each node type
+            name_fields = {
+                "Gene": "gene_name",
+                "Transcript": "transcript_name",
+                "Protein": "protein_name",
+                # Add more mappings as needed
+            }
 
-                    for prop_name in properties.keys():
-                        with schema_manager.driver.session() as session:
-                            query = f"""
-                            MATCH (n:{node_type})
-                            WHERE n.{prop_name} IS NOT NULL
-                            RETURN DISTINCT n.{prop_name} as value
-                            """
-                            result = session.run(query)
-                            logger.info(
-                                f"Found {len(result.data())} distinct values for {node_type}.{prop_name}"
+            total_indexed = 0
+            for node_type, name_field in name_fields.items():
+                with schema_manager.driver.session() as session:
+                    query = f"""
+                    MATCH (n:{node_type})
+                    WHERE n.{name_field} IS NOT NULL
+                    RETURN n.{name_field} as name
+                    """
+                    result = session.run(query)
+                    logger.info(f"Found {len(result.data())} {node_type} nodes")
+
+                    bulk_docs = []
+                    for record in result:
+                        if record["name"]:
+                            doc = {name_field: record["name"]}
+                            bulk_docs.append(
+                                {"_index": self.index_name, "_source": doc}
                             )
 
-                            bulk_props = []
-                            for record in result:
-                                value = str(record["value"])
-                                if value:
-                                    bulk_props.append(
-                                        {
-                                            "node_type": node_type,
-                                            "property_name": prop_name,
-                                            "property_value": value,
-                                        }
-                                    )
+                    if bulk_docs:
+                        from elasticsearch.helpers import bulk
 
-                            if bulk_props:
-                                self.bulk_index_properties(bulk_props)
-                                total_indexed += len(bulk_props)
-                                logger.info(
-                                    f"Indexed {len(bulk_props)} values for {node_type}.{prop_name}"
-                                )
+                        success, failed = bulk(self.es, bulk_docs)
+                        total_indexed += success
+                        logger.info(f"Indexed {success} {node_type} nodes")
 
-            logger.info(
-                f"Completed reindexing. Total properties indexed: {total_indexed}"
-            )
+            logger.info(f"Completed reindexing. Total nodes indexed: {total_indexed}")
 
             count = self.es.count(index=self.index_name)
             logger.info(f"Total documents in index: {count['count']}")

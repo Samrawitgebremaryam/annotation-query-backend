@@ -13,11 +13,6 @@ elasticsearch:
   username: elastic
   password: tFlDKvL3sM162HsUOoz* # Change this to your actual password
 
-  # SSL/TLS settings
-  verify_certs: false  # Disable SSL verification for development
-  ssl_show_warn: false # Suppress SSL warnings
-  use_ssl: true       # Enable SSL
-
   host: localhost
   port: 9200
   settings:

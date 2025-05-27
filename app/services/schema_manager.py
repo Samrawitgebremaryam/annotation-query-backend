@@ -63,35 +63,12 @@ class DynamicSchemaManager:
     def _process_properties(self, properties: Dict) -> Dict:
         """Process raw properties into schema format"""
         processed = {}
-
-        # Define property name mappings for different node types
-        property_mappings = {
-            "Gene": {"name": "gene_name"},
-            "Transcript": {"name": "transcript_name"},
-            # Add more mappings as needed
-        }
-
         for prop_name, prop_info in properties.items():
-            # Get the node type from the current context
-            node_type = None
-            for type_name, type_info in self.schema.items():
-                if type_info.get("properties") == properties:
-                    node_type = type_name
-                    break
-
-            # Map property name if a mapping exists for this node type
-            if node_type in property_mappings:
-                mapped_name = property_mappings[node_type].get(prop_name, prop_name)
-            else:
-                mapped_name = prop_name
-
-            processed[mapped_name] = {
+            processed[prop_name] = {
                 "type": prop_info.get("type", "str"),
-                "is_identifier": mapped_name.lower() in ["id", "identifier"],
-                "is_display_name": mapped_name.lower()
-                in ["name", "title", "label", "gene_name", "transcript_name"],
+                "is_identifier": prop_name.lower() in ["id", "identifier"],
+                "is_display_name": prop_name.lower() in ["name", "title", "label"],
             }
-
         return processed
 
     def _discover_relationships(self):
