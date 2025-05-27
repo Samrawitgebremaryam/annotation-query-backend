@@ -1,6 +1,6 @@
 elasticsearch:
   hosts:
-    - https://localhost:9200
+    - http://localhost:9200
   timeout: 30
   retry_on_timeout: true
   max_retries: 3

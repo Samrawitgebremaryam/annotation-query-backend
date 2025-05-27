@@ -289,7 +289,7 @@ def process_query():
         return Response(formatted_response, mimetype="application/json")
     except Exception as e:
         logging.error(f"Error processing query: {e}")
-        return jsonify({"error": (e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/email-query/<id>", methods=["POST"])

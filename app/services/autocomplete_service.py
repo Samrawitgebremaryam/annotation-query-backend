@@ -212,9 +212,9 @@ class AutocompleteService:
         try:
             # Define the name fields for each node type
             name_fields = {
-                "Gene": "gene_name",
-                "Transcript": "transcript_name",
-                "Protein": "protein_name",
+                "gene": "gene_name",
+                "transcript": "transcript_name",
+                "protein": "protein_name",
                 # Add more mappings as needed
             }
 
@@ -317,9 +317,9 @@ class AutocompleteService:
 
             # Define name fields for each node type
             name_fields = {
-                "Gene": "gene_name",
-                "Transcript": "transcript_name",
-                "Protein": "protein_name",
+                "gene": "gene_name",
+                "transcript": "transcript_name",
+                "protein": "protein_name",
                 # Add more mappings as needed
             }
 
