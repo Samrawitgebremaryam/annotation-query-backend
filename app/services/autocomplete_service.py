@@ -1,370 +1,196 @@
-import os
-import time
-import yaml
 import logging
-from typing import List, Dict, Optional
-from dotenv import load_dotenv
+from typing import List, Dict, Optional, Any
 from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import (
-    ConnectionError,
-    ConnectionTimeout,
-    AuthenticationException,
-)
-import ssl
+from elasticsearch.helpers import bulk
+from neo4j import GraphDatabase
+import yaml
+from pathlib import Path
+import os
+from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
-
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class AutocompleteService:
     def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
-        self.index_name = "node_properties"
-        self.max_retries = 3
-        self.retry_delay = 2
-        self.config_path = config_path
-        self.es = None
+        """Initialize the AutocompleteService with Elasticsearch configuration."""
+        self._load_config(config_path)
+        self._init_elasticsearch()
+        self.index_name = "nodes"
+        self._create_index_if_not_exists()
 
-        self.config = self._load_config()
-        if not self.config:
-            logger.error("Elasticsearch config failed to load.")
-            return
-
-        self._initialize_elasticsearch()
-
-        if self.es:
-            self._setup_index()
-            logger.info("AutocompleteService initialized successfully.")
-        else:
-            logger.error("Failed to initialize Elasticsearch client.")
-
-    def _load_config(self):
+    def _load_config(self, config_path: str) -> None:
+        """Load Elasticsearch configuration from YAML file."""
         try:
-            with open(self.config_path, "r") as f:
-                config = yaml.safe_load(f)
-
-            es_conf = config.get("elasticsearch", {})
-            es_conf["username"] = os.getenv("ELASTICSEARCH_USERNAME", "elastic")
-            es_conf["password"] = os.getenv("ELASTICSEARCH_PASSWORD")
-
-            if not es_conf["password"]:
-                raise ValueError("Missing ELASTICSEARCH_PASSWORD environment variable.")
-
-            # Set default hosts if missing
-            if not es_conf.get("hosts"):
-                es_conf["hosts"] = ["https://localhost:9200"]
-
-            # SSL settings
-            es_conf["verify_certs"] = False
-            es_conf["ssl_show_warn"] = False
-            es_conf["use_ssl"] = True
-
-            # Connection settings
-            es_conf.setdefault("timeout", 30)
-            es_conf.setdefault("retry_on_timeout", True)
-            es_conf.setdefault("max_retries", 3)
-
-            return es_conf
+            with open(config_path, "r") as f:
+                self.config = yaml.safe_load(f)
         except Exception as e:
-            logger.error(f"Failed to load config: {e}")
-            return None
+            logger.error(f"Failed to load config from {config_path}: {str(e)}")
+            raise
 
-    def _initialize_elasticsearch(self):
-        for attempt in range(self.max_retries):
-            try:
-                # Create an insecure SSL context
-                context = ssl.create_default_context()
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-
-                # Configure Elasticsearch client for version 8.11.1
-                self.es = Elasticsearch(
-                    hosts=self.config["hosts"],
-                    basic_auth=(self.config["username"], self.config["password"]),
-                    verify_certs=False,
-                    ssl_show_warn=False,
-                    ssl_context=context,
-                    request_timeout=self.config["timeout"],
-                    retry_on_timeout=self.config["retry_on_timeout"],
-                    max_retries=self.config["max_retries"],
-                )
-
-                # Try to get cluster info first to verify connection
-                try:
-                    cluster_info = self.es.info()
-                    logger.info(
-                        f"Connected to Elasticsearch cluster: {cluster_info.get('version', {}).get('number', 'unknown')}"
-                    )
-                    return
-                except Exception as e:
-                    logger.warning(f"Failed to get cluster info: {str(e)}")
-                    if self.es.ping():
-                        logger.info("Connected to Elasticsearch (ping successful).")
-                        return
-                    else:
-                        logger.warning("Elasticsearch ping failed.")
-
-            except Exception as e:
-                logger.warning(
-                    f"Attempt {attempt + 1}: Elasticsearch connection failed - {str(e)}"
-                )
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-                else:
-                    logger.error(
-                        f"Final connection attempt failed with error: {str(e)}"
-                    )
-
-        self.es = None
-        logger.error("Elasticsearch connection attempts exceeded.")
-
-    def _setup_index(self):
-        if not self.es:
-            return
-
+    def _init_elasticsearch(self) -> None:
+        """Initialize Elasticsearch client with SSL configuration."""
         try:
-            if not self.es.indices.exists(index=self.index_name):
-                logger.info(f"Creating index: {self.index_name}")
-                mappings = {
-                    "mappings": {
-                        "properties": {
-                            "node_type": {"type": "keyword"},
-                            "property_name": {"type": "keyword"},
-                            "property_value": {
-                                "type": "text",
-                                "fields": {
-                                    "keyword": {"type": "keyword", "ignore_above": 256}
-                                },
-                            },
-                        }
-                    },
-                    "settings": self.config.get(
-                        "settings",
-                        {
-                            "number_of_shards": 1,
-                            "number_of_replicas": 0,
-                            "refresh_interval": "1s",
-                        },
-                    ),
-                }
-                self.es.indices.create(index=self.index_name, body=mappings)
-            else:
-                logger.info(f"Index '{self.index_name}' already exists.")
-        except Exception as e:
-            logger.error(f"Index setup error: {e}")
-
-    def index_node_property(
-        self, node_type: str, property_name: str, property_value: str
-    ):
-        if self.es is None:
-            logger.error(
-                "Cannot index property: Elasticsearch client is not initialized"
+            self.es = Elasticsearch(
+                hosts=[self.config["elasticsearch"]["host"]],
+                basic_auth=(
+                    os.getenv("ES_USERNAME", "elastic"),
+                    os.getenv("ES_PASSWORD", ""),
+                ),
+                verify_certs=False,  # For development only
+                ssl_show_warn=False,  # For development only
             )
-            return
+            if not self.es.ping():
+                raise ConnectionError("Failed to connect to Elasticsearch")
+        except Exception as e:
+            logger.error(f"Failed to initialize Elasticsearch client: {str(e)}")
+            raise
 
+    def _create_index_if_not_exists(self) -> None:
+        """Create Elasticsearch index with completion suggester mapping if it doesn't exist."""
+        if not self.es.indices.exists(index=self.index_name):
+            mapping = {
+                "settings": {"number_of_shards": 1, "number_of_replicas": 1},
+                "mappings": {
+                    "properties": {
+                        "name": {"type": "text"},
+                        "name.suggest": {
+                            "type": "completion",
+                            "analyzer": "simple",
+                            "preserve_separators": True,
+                            "preserve_position_increments": True,
+                            "max_input_length": 50,
+                            "contexts": {"label": {"type": "category"}},
+                        },
+                        "labels": {"type": "keyword"},
+                        "name_field": {"type": "keyword"},
+                    }
+                },
+            }
+            try:
+                self.es.indices.create(index=self.index_name, body=mapping)
+                logger.info(f"Created index {self.index_name}")
+            except Exception as e:
+                logger.error(f"Failed to create index {self.index_name}: {str(e)}")
+                raise
+
+    def index_node(self, name: str, labels: List[str], name_field: str) -> None:
+        """Index a single node in Elasticsearch."""
         try:
             doc = {
-                "node_type": node_type,
-                "property_name": property_name,
-                "property_value": property_value,
+                "name": name,
+                "name.suggest": {
+                    "input": [name.lower()],
+                    "weight": 10,
+                    "contexts": {"label": labels},
+                },
+                "labels": labels,
+                "name_field": name_field,
             }
-            self.es.index(index=self.index_name, body=doc)
+            self.es.index(index=self.index_name, document=doc)
         except Exception as e:
-            logger.error(f"Error indexing property: {e}")
+            logger.error(f"Failed to index node {name}: {str(e)}")
+            raise
 
-    def bulk_index_properties(self, properties: List[Dict]):
-        if self.es is None:
-            logger.error("Cannot bulk index: Elasticsearch client is not initialized")
-            return
-
+    def bulk_index_nodes(self, nodes: List[Dict[str, Any]]) -> None:
+        """Bulk index multiple nodes in Elasticsearch."""
         try:
             actions = []
-            for prop in properties:
+            for node in nodes:
                 action = {
                     "_index": self.index_name,
                     "_source": {
-                        "node_type": prop["node_type"],
-                        "property_name": prop["property_name"],
-                        "property_value": prop["property_value"],
+                        "name": node["name"],
+                        "name.suggest": {
+                            "input": [node["name"].lower()],
+                            "weight": 10,
+                            "contexts": {"label": node["labels"]},
+                        },
+                        "labels": node["labels"],
+                        "name_field": node["name_field"],
                     },
                 }
                 actions.append(action)
 
-            from elasticsearch.helpers import bulk
-
             success, failed = bulk(self.es, actions)
-            logger.info(f"Bulk indexed {success} documents, {failed} failed")
+            logger.info(f"Bulk indexed {success} nodes, {failed} failed")
         except Exception as e:
-            logger.error(f"Error in bulk indexing: {e}")
+            logger.error(f"Failed to bulk index nodes: {str(e)}")
+            raise
+
+    def reindex_from_neo4j(self, neo4j_driver: GraphDatabase.driver) -> None:
+        """Reindex all nodes from Neo4j to Elasticsearch."""
+        try:
+            with neo4j_driver.session() as session:
+                # Query to get all nodes with name properties
+                query = """
+                MATCH (n)
+                WHERE any(prop IN keys(n) WHERE prop ENDS WITH '_name')
+                RETURN n, labels(n) as labels, 
+                       [prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0] as name_field,
+                       n[[prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0]] as name
+                """
+                result = session.run(query)
+
+                nodes_to_index = []
+                for record in result:
+                    node = {
+                        "name": record["name"],
+                        "labels": record["labels"],
+                        "name_field": record["name_field"],
+                    }
+                    nodes_to_index.append(node)
+
+                if nodes_to_index:
+                    self.bulk_index_nodes(nodes_to_index)
+                    logger.info(f"Successfully reindexed {len(nodes_to_index)} nodes")
+                else:
+                    logger.warning("No nodes found to index")
+        except Exception as e:
+            logger.error(f"Failed to reindex from Neo4j: {str(e)}")
+            raise
 
     def search_suggestions(
-        self,
-        query: str,
-        node_type: Optional[str] = None,
-        size: int = 10,
-    ) -> List[Dict]:
-        if self.es is None:
-            logger.error("Cannot search: Elasticsearch client is not initialized")
-            return []
-
+        self, query: str, label: Optional[str] = None, size: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Search for suggestions based on the query and optional label filter."""
         try:
-            # Define the name fields for each node type
-            name_fields = {
-                "gene": "gene_name",
-                "transcript": "transcript_name",
-                "protein": "protein_name",
-                # Add more mappings as needed
-            }
-
-            # Build the query
-            should_conditions = []
-
-            # If node_type is specified, search only in that type's name field
-            if node_type and node_type in name_fields:
-                should_conditions.append(
-                    {
-                        "match_phrase_prefix": {
-                            name_fields[node_type]: {"query": query, "slop": 1}
-                        }
-                    }
-                )
-            else:
-                # Search in all name fields
-                for field in name_fields.values():
-                    should_conditions.append(
-                        {"match_phrase_prefix": {field: {"query": query, "slop": 1}}}
-                    )
-
-            search_query = {
-                "query": {
-                    "bool": {"should": should_conditions, "minimum_should_match": 1}
-                },
-                "size": size,
-                "sort": [{"_score": "desc"}],
-            }
-
-            logger.info(f"Executing search query: {search_query}")
-
-            response = self.es.search(index=self.index_name, body=search_query)
-
-            suggestions = []
-            for hit in response["hits"]["hits"]:
-                source = hit["_source"]
-                # Determine which name field was matched
-                matched_field = None
-                for field in name_fields.values():
-                    if field in source:
-                        matched_field = field
-                        break
-
-                if matched_field:
-                    suggestions.append(
-                        {
-                            "node_type": next(
-                                (
-                                    k
-                                    for k, v in name_fields.items()
-                                    if v == matched_field
-                                ),
-                                None,
-                            ),
-                            "name": source[matched_field],
-                            "score": hit["_score"],
-                        }
-                    )
-
-            logger.info(f"Found {len(suggestions)} suggestions for query: {query}")
-            return suggestions
-
-        except Exception as e:
-            logger.error(f"Error searching suggestions: {e}")
-            return []
-
-    def reindex_from_schema(self, schema_manager):
-        if self.es is None:
-            logger.error("Cannot reindex: Elasticsearch client is not initialized")
-            return
-
-        try:
-            if self.es.indices.exists(index=self.index_name):
-                self.es.indices.delete(index=self.index_name)
-                logger.info(f"Deleted existing index {self.index_name}")
-
-            # Create index with proper mappings
-            mappings = {
-                "mappings": {
-                    "properties": {
-                        "gene_name": {
-                            "type": "text",
-                            "fields": {"keyword": {"type": "keyword"}},
+            suggest_query = {
+                "suggest": {
+                    "name_suggest": {
+                        "prefix": query.lower(),
+                        "completion": {
+                            "field": "name.suggest",
+                            "size": size,
+                            "skip_duplicates": True,
+                            "fuzzy": {"fuzziness": "AUTO"},
                         },
-                        "transcript_name": {
-                            "type": "text",
-                            "fields": {"keyword": {"type": "keyword"}},
-                        },
-                        "protein_name": {
-                            "type": "text",
-                            "fields": {"keyword": {"type": "keyword"}},
-                        },
-                        # Add more name fields as needed
                     }
                 }
             }
-            self.es.indices.create(index=self.index_name, body=mappings)
-            logger.info("Created new index with mappings")
 
-            # Define name fields for each node type
-            name_fields = {
-                "gene": "gene_name",
-                "transcript": "transcript_name",
-                "protein": "protein_name",
-                # Add more mappings as needed
-            }
+            if label:
+                suggest_query["suggest"]["name_suggest"]["completion"]["contexts"] = {
+                    "label": [label]
+                }
 
-            total_indexed = 0
-            for node_type, name_field in name_fields.items():
-                with schema_manager.driver.session() as session:
-                    query = f"""
-                    MATCH (n:{node_type})
-                    WHERE n.{name_field} IS NOT NULL
-                    RETURN n.{name_field} as name
-                    """
-                    result = session.run(query)
-                    logger.info(f"Found {len(result.data())} {node_type} nodes")
+            response = self.es.search(index=self.index_name, body=suggest_query)
 
-                    bulk_docs = []
-                    for record in result:
-                        if record["name"]:
-                            doc = {name_field: record["name"]}
-                            bulk_docs.append(
-                                {"_index": self.index_name, "_source": doc}
-                            )
+            suggestions = []
+            for option in response["suggest"]["name_suggest"][0]["options"]:
+                source = option["_source"]
+                suggestions.append(
+                    {
+                        "name": source["name"],
+                        "labels": source["labels"],
+                        "score": option["_score"],
+                        "name_field": source["name_field"],
+                    }
+                )
 
-                    if bulk_docs:
-                        from elasticsearch.helpers import bulk
-
-                        success, failed = bulk(self.es, bulk_docs)
-                        total_indexed += success
-                        logger.info(f"Indexed {success} {node_type} nodes")
-
-            logger.info(f"Completed reindexing. Total nodes indexed: {total_indexed}")
-
-            count = self.es.count(index=self.index_name)
-            logger.info(f"Total documents in index: {count['count']}")
-
+            return suggestions
         except Exception as e:
-            logger.error(f"Error reindexing from schema: {e}")
+            logger.error(f"Failed to search suggestions for query '{query}': {str(e)}")
             raise
-
-    def force_reindex(self, schema_manager):
-        """Force reindexing of all data"""
-        try:
-            logger.info("Starting forced reindexing...")
-            self.reindex_from_schema(schema_manager)
-            logger.info("Forced reindexing completed successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error during forced reindexing: {e}")
-            return False

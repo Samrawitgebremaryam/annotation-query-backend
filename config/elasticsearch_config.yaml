@@ -1,21 +1,24 @@
 elasticsearch:
-  hosts:
-    - http://localhost:9200
-  timeout: 30
-  retry_on_timeout: true
-  max_retries: 3
-  settings:
-    number_of_shards: 1
-    number_of_replicas: 0
-    refresh_interval: "1s"
-
-  # Authentication settings
-  username: elastic
-  password: tFlDKvL3sM162HsUOoz* # Change this to your actual password
-
-  host: localhost
-  port: 9200
-  settings:
-    number_of_shards: 1
-    number_of_replicas: 0
-    refresh_interval: "1s"
+  host: "https://localhost:9200" # Update this with your Elasticsearch host
+  index:
+    name: "nodes"
+    settings:
+      number_of_shards: 1
+      number_of_replicas: 1
+    mappings:
+      properties:
+        name:
+          type: text
+        name.suggest:
+          type: completion
+          analyzer: simple
+          preserve_separators: true
+          preserve_position_increments: true
+          max_input_length: 50
+          contexts:
+            label:
+              type: category
+        labels:
+          type: keyword
+        name_field:
+          type: keyword

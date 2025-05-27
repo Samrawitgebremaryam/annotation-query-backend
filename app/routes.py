@@ -21,9 +21,13 @@ from app.annotation_controller import handle_client_request, process_full_data, 
 from app.constants import TaskStatus
 from app.workers.task_handler import get_annotation_redis
 from app.persistence import AnnotationStorageService
+from app.services.autocomplete_service import AutocompleteService
 
 # Load environmental variables
 load_dotenv()
+
+# Initialize autocomplete service
+autocomplete_service = AutocompleteService()
 
 # set mongo logging
 logging.getLogger("pymongo").setLevel(logging.CRITICAL)
@@ -697,4 +701,35 @@ def delete_many():
         return Response(formatted_response, mimetype="application/json")
     except Exception as e:
         logging.error(f"Error deleting annotations: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/autocomplete", methods=["GET"])
+def get_suggestions():
+    """Get autocomplete suggestions for a query string."""
+    try:
+        query = request.args.get("q", "")
+        label = request.args.get("label")
+        size = request.args.get("size", 10, type=int)
+
+        if not query:
+            return jsonify({"error": "Query parameter 'q' is required"}), 400
+
+        suggestions = autocomplete_service.search_suggestions(
+            query=query, label=label, size=size
+        )
+        return jsonify({"suggestions": suggestions})
+    except Exception as e:
+        logging.error(f"Error getting suggestions: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/autocomplete/reindex", methods=["POST"])
+def reindex_nodes():
+    """Reindex all nodes from Neo4j to Elasticsearch."""
+    try:
+        autocomplete_service.reindex_from_neo4j(db_instance.driver)
+        return jsonify({"message": "Successfully reindexed nodes"})
+    except Exception as e:
+        logging.error(f"Error reindexing nodes: {str(e)}")
         return jsonify({"error": str(e)}), 500
