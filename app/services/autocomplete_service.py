@@ -85,19 +85,33 @@ class AutocompleteService:
         """Create Elasticsearch index with completion suggester mapping if it doesn't exist."""
         if not self.es.indices.exists(index=self.index_name):
             mapping = {
-                "settings": {"number_of_shards": 1, "number_of_replicas": 1},
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 1,
+                    "analysis": {
+                        "analyzer": {
+                            "autocomplete_analyzer": {
+                                "type": "custom",
+                                "tokenizer": "standard",
+                                "filter": ["lowercase", "autocomplete_filter"],
+                            }
+                        },
+                        "filter": {
+                            "autocomplete_filter": {
+                                "type": "edge_ngram",
+                                "min_gram": 1,
+                                "max_gram": 20,
+                            }
+                        },
+                    },
+                },
                 "mappings": {
                     "properties": {
                         "name": {
                             "type": "text",
+                            "analyzer": "autocomplete_analyzer",
+                            "search_analyzer": "standard",
                             "fields": {"keyword": {"type": "keyword"}},
-                        },
-                        "suggest": {
-                            "type": "completion",
-                            "analyzer": "simple",
-                            "preserve_separators": True,
-                            "preserve_position_increments": True,
-                            "max_input_length": 50,
                         },
                         "labels": {"type": "keyword"},
                         "name_field": {"type": "keyword"},
@@ -110,43 +124,6 @@ class AutocompleteService:
             except Exception as e:
                 logger.error(f"Failed to create index {self.index_name}: {str(e)}")
                 raise
-
-    def index_node(self, name: str, labels: List[str], name_field: str) -> None:
-        """Index a single node in Elasticsearch."""
-        try:
-            doc = {
-                "name": name,
-                "suggest": {"input": [name.lower()], "weight": 10},
-                "labels": labels,
-                "name_field": name_field,
-            }
-            self.es.index(index=self.index_name, document=doc)
-            logger.info(f"Indexed node: {name}")
-        except Exception as e:
-            logger.error(f"Failed to index node {name}: {str(e)}")
-            raise
-
-    def bulk_index_nodes(self, nodes: List[Dict[str, Any]]) -> None:
-        """Bulk index multiple nodes in Elasticsearch."""
-        try:
-            actions = []
-            for node in nodes:
-                action = {
-                    "_index": self.index_name,
-                    "_source": {
-                        "name": node["name"],
-                        "suggest": {"input": [node["name"].lower()], "weight": 10},
-                        "labels": node["labels"],
-                        "name_field": node["name_field"],
-                    },
-                }
-                actions.append(action)
-
-            success, failed = bulk(self.es, actions)
-            logger.info(f"Bulk indexed {success} nodes, {failed} failed")
-        except Exception as e:
-            logger.error(f"Failed to bulk index nodes: {str(e)}")
-            raise
 
     def reindex_from_neo4j(self, neo4j_driver: GraphDatabase.driver) -> None:
         """Reindex all nodes from Neo4j to Elasticsearch."""
@@ -164,6 +141,8 @@ class AutocompleteService:
 
                 nodes_to_index = []
                 for record in result:
+                    if not record["name"]:  # Skip nodes with empty names
+                        continue
                     node = {
                         "name": record["name"],
                         "labels": record["labels"],
@@ -173,80 +152,34 @@ class AutocompleteService:
 
                 if nodes_to_index:
                     logger.info(f"Found {len(nodes_to_index)} nodes to index")
-                    # Log sample nodes and their properties
-                    logger.info("Sample nodes to be indexed:")
-                    for i, node in enumerate(nodes_to_index[:5]):
-                        logger.info(f"Node {i+1}:")
-                        logger.info(f"  Name: {node['name']}")
-                        logger.info(f"  Labels: {node['labels']}")
-                        logger.info(f"  Name Field: {node['name_field']}")
 
                     # Delete existing index if it exists
                     if self.es.indices.exists(index=self.index_name):
                         logger.info(f"Deleting existing index {self.index_name}")
                         self.es.indices.delete(index=self.index_name)
 
-                    # Create new index with improved mapping
-                    mapping = {
-                        "settings": {
-                            "number_of_shards": 1,
-                            "number_of_replicas": 1,
-                            "analysis": {
-                                "analyzer": {
-                                    "autocomplete_analyzer": {
-                                        "type": "custom",
-                                        "tokenizer": "standard",
-                                        "filter": ["lowercase", "autocomplete_filter"],
-                                    }
-                                },
-                                "filter": {
-                                    "autocomplete_filter": {
-                                        "type": "edge_ngram",
-                                        "min_gram": 1,
-                                        "max_gram": 20,
-                                    }
-                                },
-                            },
-                        },
-                        "mappings": {
-                            "properties": {
-                                "name": {
-                                    "type": "text",
-                                    "analyzer": "autocomplete_analyzer",
-                                    "search_analyzer": "standard",
-                                    "fields": {"keyword": {"type": "keyword"}},
-                                },
-                                "labels": {"type": "keyword"},
-                                "name_field": {"type": "keyword"},
-                            }
-                        },
-                    }
-
-                    try:
-                        self.es.indices.create(index=self.index_name, body=mapping)
-                        logger.info(f"Created index {self.index_name} with new mapping")
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to create index {self.index_name}: {str(e)}"
-                        )
-                        raise
+                    # Create new index
+                    self._create_index_if_not_exists()
 
                     # Index the nodes
-                    self.bulk_index_nodes(nodes_to_index)
-                    logger.info(f"Successfully reindexed {len(nodes_to_index)} nodes")
+                    actions = []
+                    for node in nodes_to_index:
+                        action = {"_index": self.index_name, "_source": node}
+                        actions.append(action)
 
-                    # Verify the index and show sample data
+                    success, failed = bulk(self.es, actions)
+                    if failed:
+                        logger.error(f"Failed to index {len(failed)} nodes")
+                        for error in failed:
+                            logger.error(f"Error indexing node: {error}")
+                    logger.info(f"Successfully indexed {success} nodes")
+
+                    # Verify indexing
                     count = self.es.count(index=self.index_name)
-                    logger.info(f"Index now contains {count['count']} documents")
-
-                    # Get and log some sample documents from the index
-                    sample_docs = self.es.search(
-                        index=self.index_name,
-                        body={"query": {"match_all": {}}, "size": 5},
-                    )
-                    logger.info("Sample documents in index:")
-                    for hit in sample_docs["hits"]["hits"]:
-                        logger.info(f"Document: {hit['_source']}")
+                    if count["count"] != success:
+                        logger.warning(
+                            f"Index count ({count['count']}) doesn't match success count ({success})"
+                        )
                 else:
                     logger.warning("No nodes found to index")
         except Exception as e:
@@ -258,14 +191,14 @@ class AutocompleteService:
     ) -> List[Dict[str, Any]]:
         """Search for suggestions based on the query and optional label filter."""
         try:
-            # Log the incoming query
-            logger.info(f"Searching for suggestions with query: '{query}'")
+            if not query:
+                return []
 
-            # Build the search query with multiple matching strategies
+            # Build the search query
             search_query = {
                 "query": {
                     "bool": {
-                        "should": [
+                        "must": [
                             {
                                 "match": {
                                     "name": {
@@ -274,10 +207,8 @@ class AutocompleteService:
                                         "prefix_length": 1,
                                     }
                                 }
-                            },
-                            {"wildcard": {"name": {"value": f"*{query.lower()}*"}}},
-                        ],
-                        "minimum_should_match": 1,
+                            }
+                        ]
                     }
                 }
             }
@@ -286,25 +217,10 @@ class AutocompleteService:
             if label:
                 search_query["query"]["bool"]["filter"] = [{"term": {"labels": label}}]
 
-            # Log the search query
-            logger.info(f"Elasticsearch query: {search_query}")
-
             # Execute the search
             response = self.es.search(
                 index=self.index_name, body=search_query, size=size
             )
-
-            # Log the response
-            logger.info(f"Found {len(response['hits']['hits'])} results")
-            logger.info(f"Total hits: {response['hits']['total']['value']}")
-
-            # Log sample results if any
-            if response["hits"]["hits"]:
-                logger.info("Sample results:")
-                for hit in response["hits"]["hits"][:3]:
-                    logger.info(f"  Name: {hit['_source']['name']}")
-                    logger.info(f"  Labels: {hit['_source']['labels']}")
-                    logger.info(f"  Score: {hit['_score']}")
 
             # Process the results
             suggestions = []
