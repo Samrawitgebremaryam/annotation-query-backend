@@ -7,15 +7,20 @@ import yaml
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+import urllib3
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Disable SSL warnings for development
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 class AutocompleteService:
     def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
         """Initialize the AutocompleteService with Elasticsearch configuration."""
+        load_dotenv()  # Load environment variables
         self._load_config(config_path)
         self._init_elasticsearch()
         self.index_name = "nodes"
@@ -33,29 +38,80 @@ class AutocompleteService:
     def _init_elasticsearch(self) -> None:
         """Initialize Elasticsearch client with SSL configuration."""
         try:
+            # Get credentials from environment variables
+            es_username = os.getenv("ES_USERNAME")
+            es_password = os.getenv("ES_PASSWORD")
+
+            if not es_username or not es_password:
+                raise ValueError(
+                    "ES_USERNAME and ES_PASSWORD environment variables must be set"
+                )
+
+            # Configure Elasticsearch client
             self.es = Elasticsearch(
                 hosts=[self.config["elasticsearch"]["host"]],
-                basic_auth=(
-                    os.getenv("ES_USERNAME", "elastic"),
-                    os.getenv("ES_PASSWORD", ""),
-                ),
+                basic_auth=(es_username, es_password),
                 verify_certs=False,  # For development only
                 ssl_show_warn=False,  # For development only
+                request_timeout=30,  # Increase timeout
+                retry_on_timeout=True,
+                max_retries=3,
             )
+
+            # Test connection
             if not self.es.ping():
                 raise ConnectionError("Failed to connect to Elasticsearch")
+
+            logger.info("Successfully connected to Elasticsearch")
+
+            # Get cluster info for debugging
+            cluster_info = self.es.info()
+            logger.info(
+                f"Connected to Elasticsearch cluster: {cluster_info.get('cluster_name', 'unknown')}"
+            )
+
         except Exception as e:
             logger.error(f"Failed to initialize Elasticsearch client: {str(e)}")
+            logger.error(
+                "Please ensure Elasticsearch is running and credentials are correct"
+            )
+            logger.error(f"ES_USERNAME: {os.getenv('ES_USERNAME', 'not set')}")
+            logger.error(
+                f"ES_PASSWORD: {'set' if os.getenv('ES_PASSWORD') else 'not set'}"
+            )
             raise
 
     def _create_index_if_not_exists(self) -> None:
         """Create Elasticsearch index with completion suggester mapping if it doesn't exist."""
         if not self.es.indices.exists(index=self.index_name):
             mapping = {
-                "settings": {"number_of_shards": 1, "number_of_replicas": 1},
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 1,
+                    "analysis": {
+                        "analyzer": {
+                            "autocomplete": {
+                                "type": "custom",
+                                "tokenizer": "standard",
+                                "filter": ["lowercase", "autocomplete_filter"],
+                            }
+                        },
+                        "filter": {
+                            "autocomplete_filter": {
+                                "type": "edge_ngram",
+                                "min_gram": 1,
+                                "max_gram": 20,
+                            }
+                        },
+                    },
+                },
                 "mappings": {
                     "properties": {
-                        "name": {"type": "text"},
+                        "name": {
+                            "type": "text",
+                            "analyzer": "autocomplete",
+                            "search_analyzer": "standard",
+                        },
                         "name.suggest": {
                             "type": "completion",
                             "analyzer": "simple",
@@ -90,6 +146,7 @@ class AutocompleteService:
                 "name_field": name_field,
             }
             self.es.index(index=self.index_name, document=doc)
+            logger.info(f"Indexed node: {name}")
         except Exception as e:
             logger.error(f"Failed to index node {name}: {str(e)}")
             raise
