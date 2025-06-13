@@ -706,31 +706,55 @@ def delete_many():
 
 @app.route("/autocomplete", methods=["GET"])
 def get_suggestions():
-    """Get autocomplete suggestions for a query string."""
+    """Get autocomplete suggestions for a query string.
+
+    Query Parameters:
+        q or query (str): Search term (required).
+        node_type (str): Neo4j node type (e.g., 'gene', 'transcript').
+        size (int): Number of suggestions (default: 10, max: 20).
+
+    Returns:
+        JSON response with suggestions or error message.
+    """
     try:
-        # Try to get query from either 'q' or 'query' parameter
+        # Get query from either 'q' or 'query' parameter
         query = request.args.get("q") or request.args.get("query", "")
-        label = request.args.get("label")
+        node_type = request.args.get("node_type")
         size = request.args.get("size", 10, type=int)
 
         if not query:
             return jsonify({"error": "Query parameter 'q' or 'query' is required"}), 400
+        if not node_type:
+            return jsonify({"error": "Node type parameter 'node_type' is required"}), 400
 
         suggestions = autocomplete_service.search_suggestions(
-            query=query, label=label, size=size
+            node_type=node_type, query=query, size=size
         )
         return jsonify({"suggestions": suggestions})
+    except ValueError as e:
+        logger.error(f"Invalid input for suggestions: {str(e)}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logging.error(f"Error getting suggestions: {str(e)}")
+        logger.error(f"Error getting suggestions: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/autocomplete/reindex", methods=["POST"])
 def reindex_nodes():
-    """Reindex all nodes from Neo4j to Elasticsearch."""
+    """Reindex all nodes from Neo4j to Elasticsearch.
+
+    Returns:
+        JSON response with success or error message.
+    """
     try:
         autocomplete_service.reindex_from_neo4j(db_instance.driver)
         return jsonify({"message": "Successfully reindexed nodes"})
     except Exception as e:
-        logging.error(f"Error reindexing nodes: {str(e)}")
+        logger.error(f"Error reindexing nodes: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    try:
+        app.run(debug=True)
+    finally:
+        db_instance.close()
+
