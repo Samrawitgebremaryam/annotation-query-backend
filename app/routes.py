@@ -23,6 +23,10 @@ from app.workers.task_handler import get_annotation_redis
 from app.persistence import AnnotationStorageService
 from app.services.autocomplete_service import AutocompleteService
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Load environmental variables
 load_dotenv()
 
@@ -725,7 +729,10 @@ def get_suggestions():
         if not query:
             return jsonify({"error": "Query parameter 'q' or 'query' is required"}), 400
         if not node_type:
-            return jsonify({"error": "Node type parameter 'node_type' is required"}), 400
+            return (
+                jsonify({"error": "Node type parameter 'node_type' is required"}),
+                400,
+            )
 
         suggestions = autocomplete_service.search_suggestions(
             node_type=node_type, query=query, size=size
@@ -737,6 +744,7 @@ def get_suggestions():
     except Exception as e:
         logger.error(f"Error getting suggestions: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/autocomplete/reindex", methods=["POST"])
 def reindex_nodes():
@@ -752,9 +760,9 @@ def reindex_nodes():
         logger.error(f"Error reindexing nodes: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
     try:
         app.run(debug=True)
     finally:
         db_instance.close()
-

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class AutocompleteService:
     def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
         """Initialize AutocompleteService with Elasticsearch configuration.
@@ -85,24 +86,31 @@ class AutocompleteService:
         if not self.es.indices.exists(index=index_name):
             mapping = {
                 "settings": {
-                    "number_of_shards": 2,  # Adjust based on dataset size
-                    "number_of_replicas": 1,
-                    "index": {
-                        "query": {"default_field": "name_suggest"},
-                        "requests.cache.enable": True  # Enable caching
-                    }
+                    "number_of_shards": 1,
+                    "number_of_replicas": 0,
+                    "analysis": {
+                        "analyzer": {
+                            "simple_analyzer": {
+                                "type": "custom",
+                                "tokenizer": "standard",
+                                "filter": ["lowercase", "asciifolding"],
+                            }
+                        }
+                    },
                 },
                 "mappings": {
                     "properties": {
-                        "name": {"type": "keyword"},  # Exact name for retrieval
-                        "id": {"type": "keyword"},    # Neo4j node ID
+                        "name": {"type": "keyword"},
+                        "id": {"type": "keyword"},
                         "name_suggest": {
                             "type": "completion",
-                            "analyzer": "simple",
-                            "max_input_length": 50
-                        }
+                            "analyzer": "simple_analyzer",
+                            "preserve_separators": True,
+                            "preserve_position_increments": True,
+                            "max_input_length": 50,
+                        },
                     }
-                }
+                },
             }
             try:
                 self.es.indices.create(index=index_name, body=mapping)
@@ -111,7 +119,12 @@ class AutocompleteService:
                 logger.error(f"Failed to create index {index_name}: {e}")
                 raise RuntimeError(f"Index creation failed: {e}")
 
-    def reindex_from_neo4j(self, neo4j_driver: GraphDatabase.driver, batch_size: int = 500, incremental: bool = True) -> None:
+    def reindex_from_neo4j(
+        self,
+        neo4j_driver: GraphDatabase.driver,
+        batch_size: int = 500,
+        incremental: bool = True,
+    ) -> None:
         """Reindex Neo4j nodes to Elasticsearch, creating separate indices per node type.
 
         Indexes the first '_name' property and node ID for each node.
@@ -125,14 +138,17 @@ class AutocompleteService:
             RuntimeError: If reindexing fails.
         """
         try:
+            # Test connection before proceeding
+            with neo4j_driver.session() as session:
+                session.run("RETURN 1").single()
+
             with neo4j_driver.session() as session:
                 query = """
                 MATCH (n)
                 WHERE any(prop IN keys(n) WHERE prop ENDS WITH '_name')
                 RETURN n, labels(n) as labels, 
                        [prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0] as name_field,
-                       n[[prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0]] as name,
-                       n.popularity as popularity
+                       n[[prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0]] as name
                 """
                 result = session.run(query)
 
@@ -140,15 +156,13 @@ class AutocompleteService:
                 for record in result:
                     if not record["name"] or not record["labels"]:
                         continue
-                    node_type = record["labels"][0].lower()  # Primary label as node type
+                    node_type = record["labels"][
+                        0
+                    ].lower()  # Primary label as node type
                     node = {
-                        "_id": str(record["n"].id),
                         "name": record["name"],
                         "id": str(record["n"].id),
-                        "name_suggest": {
-                            "input": record["name"],
-                            "weight": record["popularity"] or 1  # Dynamic weight
-                        }
+                        "name_suggest": {"input": record["name"]},
                     }
                     if node_type not in nodes_by_type:
                         nodes_by_type[node_type] = []
@@ -177,15 +191,30 @@ class AutocompleteService:
                         {
                             "_op_type": "index" if not incremental else "update",
                             "_index": index_name,
-                            "_id": node["_id"],
-                            "_source": node if not incremental else {"doc": node, "doc_as_upsert": True}
+                            "_id": str(node["id"]),
+                            "_source": (
+                                node
+                                if not incremental
+                                else {"doc": node, "doc_as_upsert": True}
+                            ),
                         }
                         for node in nodes
                     ]
-                    success, failed = bulk(self.es, actions, chunk_size=batch_size)
-                    if failed:
-                        logger.error(f"Failed to index {len(failed)} nodes for {node_type}: {failed}")
-                    logger.info(f"Indexed {success} nodes for {node_type}")
+                    try:
+                        success, failed = bulk(
+                            self.es,
+                            actions,
+                            chunk_size=batch_size,
+                            raise_on_error=False,
+                        )
+                        if failed:
+                            logger.error(
+                                f"Failed to index {len(failed)} nodes for {node_type}: {failed}"
+                            )
+                        logger.info(f"Indexed {success} nodes for {node_type}")
+                    except Exception as e:
+                        logger.error(f"Bulk indexing failed for {node_type}: {str(e)}")
+                        raise RuntimeError(f"Bulk indexing failed: {str(e)}")
 
                     count = self.es.count(index=index_name)["count"]
                     logger.info(f"Total indexed documents for {node_type}: {count}")
@@ -229,25 +258,33 @@ class AutocompleteService:
                         "completion": {
                             "field": "name_suggest",
                             "size": size,
-                            "skip_duplicates": True
-                        }
+                            "skip_duplicates": True,
+                            "fuzzy": False,  # Disable fuzzy matching
+                        },
                     }
                 }
             }
 
             response = self.es.search(index=index_name, body=suggest_query)
-            suggestions = [
-                {
-                    "name": option["_source"]["name"],
-                    "id": option["_source"]["id"],
-                    "score": option["_score"]
-                }
-                for option in response["suggest"]["name-suggest"][0]["options"]
-            ]
+
+            # Extract suggestions from the response
+            suggestions = []
+            if "suggest" in response and "name-suggest" in response["suggest"]:
+                for suggestion in response["suggest"]["name-suggest"]:
+                    for option in suggestion["options"]:
+                        suggestions.append(
+                            {
+                                "name": option["_source"]["name"],
+                                "id": option["_source"]["id"],
+                                "score": option["_score"],
+                            }
+                        )
 
             return suggestions
         except Exception as e:
-            logger.error(f"Failed to search suggestions for query '{query}' in {node_type}: {e}")
+            logger.error(
+                f"Failed to search suggestions for query '{query}' in {node_type}: {e}"
+            )
             raise RuntimeError(f"Search failed: {e}")
 
 
