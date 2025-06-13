@@ -8,8 +8,8 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with DEBUG level to trace issues
+logging.basicConfig(level=logging.DEBUG)  # CHANGED: Set to DEBUG for detailed logging
 logger = logging.getLogger(__name__)
 
 class AutocompleteService:
@@ -74,7 +74,7 @@ class AutocompleteService:
                     },
                 },
                 "mappings": {
-                    "dynamic": True,  # Allow dynamic fields
+                    "dynamic": True,
                     "properties": {
                         "name": {"type": "keyword"},
                         "neo4j_id": {"type": "keyword"},
@@ -118,7 +118,7 @@ class AutocompleteService:
                 with neo4j_driver.session() as session:
                     result = session.run("CALL db.labels() YIELD label RETURN label")
                     labels = [record["label"] for record in result]
-                    logger.info(f"Found node labels: {labels}")
+                    logger.debug(f"Found node labels: {labels}")  # CHANGED: Debug logging
 
             if not labels:
                 logger.warning("No labels found in Neo4j database")
@@ -130,13 +130,14 @@ class AutocompleteService:
                 limit = 1000
 
                 while True:
+                    # CHANGED: Relax query to include nodes with 'id' if no '_name' property
                     query = f"""
                     MATCH (n:{label})
-                    WHERE any(prop IN keys(n) WHERE prop ENDS WITH '_name')
+                    WHERE any(prop IN keys(n) WHERE prop ENDS WITH '_name') OR n.id IS NOT NULL
                     AND (n.last_updated IS NULL OR n.last_updated > $last_indexed_time)
                     RETURN n, labels(n) as labels, 
-                           [prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0] as name_field,
-                           n[[prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0]] as name,
+                           COALESCE([prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0], 'id') as name_field,
+                           COALESCE(n[[prop IN keys(n) WHERE prop ENDS WITH '_name' | prop][0]], n.id) as name,
                            properties(n) as props
                     SKIP $skip LIMIT $limit
                     """
@@ -149,6 +150,7 @@ class AutocompleteService:
                         for record in result:
                             batch_empty = False
                             if not record["name"] or not record["labels"]:
+                                logger.debug(f"Skipping node {record['n'].id} with no name or labels: {record['props']}")  # CHANGED: Debug logging
                                 continue
                             node_type = record["labels"][0].lower()
                             props = record["props"]
@@ -163,7 +165,7 @@ class AutocompleteService:
 
                             # Add other string/list properties dynamically
                             for key, value in props.items():
-                                if key in ["last_updated", "start", "end"]:
+                                if key in ["last_updated", "start", "end"]:  # CHANGED: Keep exclusion list minimal
                                     continue
                                 if isinstance(value, (str, list)) and value:
                                     node[key] = value
@@ -249,6 +251,9 @@ class AutocompleteService:
                     count = self.es.count(index=index_name)["count"]
                     logger.info(f"Total indexed documents for {node_type}: {count}")
 
+            # CHANGED: Log all indexed node types
+            logger.info(f"Indexed node types: {self.node_types}")
+
         except Exception as e:
             logger.error(f"Failed to reindex from Neo4j: {e}")
             raise RuntimeError(f"Reindexing failed: {e}")
@@ -319,6 +324,7 @@ class AutocompleteService:
                 raise ValueError("No node types indexed")
 
             indices = ",".join(self.node_types)
+            logger.debug(f"Searching indices: {indices}")  # CHANGED: Debug logging
             suggest_query = {
                 "suggest": {
                     "name-suggest": {
@@ -350,6 +356,7 @@ class AutocompleteService:
                                 suggestion_dict[key] = value
                         suggestions.append(suggestion_dict)
 
+            logger.debug(f"Found {len(suggestions)} suggestions for query '{query}'")  # CHANGED: Debug logging
             return suggestions
         except Exception as e:
             logger.error(f"Failed to search all suggestions for query '{query}': {e}")
