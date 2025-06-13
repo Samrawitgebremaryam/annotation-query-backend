@@ -22,6 +22,7 @@ from app.constants import TaskStatus
 from app.workers.task_handler import get_annotation_redis
 from app.persistence import AnnotationStorageService
 from app.services.autocomplete_service import AutocompleteService
+from neo4j import GraphDatabase
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -709,60 +710,45 @@ def delete_many():
 
 
 @app.route("/autocomplete", methods=["GET"])
-def get_suggestions():
-    """Get autocomplete suggestions for a query string.
+def autocomplete():
+    query = request.args.get("q") or request.args.get("query")
+    node_type = request.args.get("node_type")
+    size = int(request.args.get("size", 10))
 
-    Query Parameters:
-        q or query (str): Search term (required).
-        node_type (str): Neo4j node type (e.g., 'gene', 'transcript').
-        size (int): Number of suggestions (default: 10, max: 20).
+    if not query:
+        return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-    Returns:
-        JSON response with suggestions or error message.
-    """
     try:
-        # Get query from either 'q' or 'query' parameter
-        query = request.args.get("q") or request.args.get("query", "")
-        node_type = request.args.get("node_type")
-        size = request.args.get("size", 10, type=int)
-
-        if not query:
-            return jsonify({"error": "Query parameter 'q' or 'query' is required"}), 400
-        if not node_type:
-            return (
-                jsonify({"error": "Node type parameter 'node_type' is required"}),
-                400,
+        if node_type:
+            suggestions = autocomplete_service.search_suggestions(
+                node_type, query, size
             )
-
-        suggestions = autocomplete_service.search_suggestions(
-            node_type=node_type, query=query, size=size
-        )
+        else:
+            suggestions = autocomplete_service.search_all_suggestions(query, size)
         return jsonify({"suggestions": suggestions})
     except ValueError as e:
-        logger.error(f"Invalid input for suggestions: {str(e)}")
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error(f"Error getting suggestions: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/autocomplete/reindex", methods=["POST"])
-def reindex_nodes():
-    """Reindex all nodes from Neo4j to Elasticsearch.
-
-    Returns:
-        JSON response with success or error message.
-    """
+def reindex():
     try:
-        autocomplete_service.reindex_from_neo4j(db_instance.driver)
-        return jsonify({"message": "Successfully reindexed nodes"})
+        neo4j_driver = GraphDatabase.driver(
+            os.getenv("NEO4J_URI"),
+            auth=(os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD")),
+        )
+        # Create indices for all node types before reindexing
+        with neo4j_driver.session() as session:
+            result = session.run("CALL db.labels() YIELD label RETURN label")
+            labels = [record["label"] for record in result]
+            for label in labels:
+                autocomplete_service._create_index_for_node_type(label.lower())
+        # Now perform the reindexing
+        autocomplete_service.reindex_from_neo4j(neo4j_driver)
+        neo4j_driver.close()
+        return jsonify({"message": "Reindexing completed successfully"})
     except Exception as e:
         logger.error(f"Error reindexing nodes: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-if __name__ == "__main__":
-    try:
-        app.run(debug=True)
-    finally:
-        db_instance.close()
+        return jsonify({"error": f"Reindexing failed: {str(e)}"}), 500
