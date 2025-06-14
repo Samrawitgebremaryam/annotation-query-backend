@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 
 # Configure logging with DEBUG level to trace issues
-logging.basicConfig(level=logging.DEBUG)  # CHANGED: Set to DEBUG for detailed logging
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class AutocompleteService:
@@ -113,12 +113,15 @@ class AutocompleteService:
             last_indexed_time = self.last_indexed_time if incremental else 0
             self.last_indexed_time = int(datetime.utcnow().timestamp())
 
+            # Reset node_types to ensure fresh collection
+            self.node_types = set()
+
             # Fetch labels if not provided
             if not labels:
                 with neo4j_driver.session() as session:
                     result = session.run("CALL db.labels() YIELD label RETURN label")
                     labels = [record["label"] for record in result]
-                    logger.debug(f"Found node labels: {labels}")  # CHANGED: Debug logging
+                    logger.debug(f"Found node labels: {labels}")
 
             if not labels:
                 logger.warning("No labels found in Neo4j database")
@@ -130,7 +133,6 @@ class AutocompleteService:
                 limit = 1000
 
                 while True:
-                    # CHANGED: Relax query to include nodes with 'id' if no '_name' property
                     query = f"""
                     MATCH (n:{label})
                     WHERE any(prop IN keys(n) WHERE prop ENDS WITH '_name') OR n.id IS NOT NULL
@@ -150,7 +152,7 @@ class AutocompleteService:
                         for record in result:
                             batch_empty = False
                             if not record["name"] or not record["labels"]:
-                                logger.debug(f"Skipping node {record['n'].id} with no name or labels: {record['props']}")  # CHANGED: Debug logging
+                                logger.debug(f"Skipping node {record['n'].id} with no name or labels: {record['props']}")
                                 continue
                             node_type = record["labels"][0].lower()
                             props = record["props"]
@@ -163,9 +165,9 @@ class AutocompleteService:
                                 "name_suggest": {"input": [record["name"]]}
                             }
 
-                            # Add other string/list properties dynamically
+                            # Add other string/list properties dynamically, excluding 'label'
                             for key, value in props.items():
-                                if key in ["last_updated", "start", "end"]:  # CHANGED: Keep exclusion list minimal
+                                if key in ["last_updated", "start", "end", "label"]:
                                     continue
                                 if isinstance(value, (str, list)) and value:
                                     node[key] = value
@@ -251,7 +253,6 @@ class AutocompleteService:
                     count = self.es.count(index=index_name)["count"]
                     logger.info(f"Total indexed documents for {node_type}: {count}")
 
-            # CHANGED: Log all indexed node types
             logger.info(f"Indexed node types: {self.node_types}")
 
         except Exception as e:
@@ -299,9 +300,9 @@ class AutocompleteService:
                             "score": option["_score"],
                             "node_type": option["_source"]["node_type"]
                         }
-                        # Include other properties dynamically
+                        # Include other properties dynamically, excluding 'label'
                         for key, value in option["_source"].items():
-                            if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id"]:
+                            if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id", "label"]:
                                 suggestion_dict[key] = value
                         suggestions.append(suggestion_dict)
 
@@ -321,17 +322,21 @@ class AutocompleteService:
                 raise ValueError("Size must be between 1 and 100")
 
             if not self.node_types:
-                raise ValueError("No node types indexed")
+                # Fallback to fetch indices from Elasticsearch
+                indices_response = self.es.indices.get_alias(index="*")
+                self.node_types = {index.lower() for index in indices_response.keys() if not index.startswith(".")}
+                if not self.node_types:
+                    raise ValueError("No node types indexed")
+                logger.debug(f"Refreshed node_types from Elasticsearch: {self.node_types}")
 
-            indices = ",".join(self.node_types)
-            logger.debug(f"Searching indices: {indices}")  # CHANGED: Debug logging
+            # CHANGED: Increase per-index size to capture all matches
             suggest_query = {
                 "suggest": {
                     "name-suggest": {
                         "prefix": query.lower(),
                         "completion": {
                             "field": "name_suggest",
-                            "size": size,
+                            "size": size,  # Use full size per index to get all matches
                             "skip_duplicates": True,
                             "fuzzy": False,
                         },
@@ -339,24 +344,34 @@ class AutocompleteService:
                 }
             }
 
-            response = self.es.search(index=indices, body=suggest_query)
             suggestions = []
-            if "suggest" in response and "name-suggest" in response["suggest"]:
-                for suggestion in response["suggest"]["name-suggest"]:
-                    for option in suggestion["options"]:
-                        suggestion_dict = {
-                            "name": option["_source"]["name"],
-                            "id": option["_source"].get("domain_id", option["_source"]["neo4j_id"]),
-                            "score": option["_score"],
-                            "node_type": option["_source"]["node_type"]
-                        }
-                        # Include other properties dynamically
-                        for key, value in option["_source"].items():
-                            if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id"]:
-                                suggestion_dict[key] = value
-                        suggestions.append(suggestion_dict)
+            for node_type in self.node_types:
+                if not self.es.indices.exists(index=node_type):
+                    logger.debug(f"Index {node_type} does not exist, skipping")
+                    continue
+                logger.debug(f"Searching index: {node_type}")
+                response = self.es.search(index=node_type, body=suggest_query)
+                index_suggestions = []
+                if "suggest" in response and "name-suggest" in response["suggest"]:
+                    for suggestion in response["suggest"]["name-suggest"]:
+                        for option in suggestion["options"]:
+                            suggestion_dict = {
+                                "name": option["_source"]["name"],
+                                "id": option["_source"].get("domain_id", option["_source"]["neo4j_id"]),
+                                "score": option["_score"],
+                                "node_type": option["_source"]["node_type"]
+                            }
+                            # Include other properties dynamically, excluding 'label'
+                            for key, value in option["_source"].items():
+                                if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id", "label"]:
+                                    suggestion_dict[key] = value
+                            index_suggestions.append(suggestion_dict)
+                logger.debug(f"Found {len(index_suggestions)} suggestions in index {node_type}")
+                suggestions.extend(index_suggestions)
 
-            logger.debug(f"Found {len(suggestions)} suggestions for query '{query}'")  # CHANGED: Debug logging
+            # Sort by score and name, limit to requested size
+            suggestions = sorted(suggestions, key=lambda x: (-x["score"], x["name"]))[:size]
+            logger.debug(f"Total found {len(suggestions)} suggestions for query '{query}'")
             return suggestions
         except Exception as e:
             logger.error(f"Failed to search all suggestions for query '{query}': {e}")
