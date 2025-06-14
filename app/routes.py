@@ -718,14 +718,16 @@ def autocomplete():
     if not query:
         return jsonify({"error": "Query parameter 'q' is required"}), 400
 
+    if not node_type:
+        return jsonify({"error": "Node type parameter is required"}), 400
+
     try:
-        if node_type:
-            suggestions = autocomplete_service.search_suggestions(
-                node_type, query, size
-            )
-        else:
-            suggestions = autocomplete_service.search_all_suggestions(query, size)
-        return jsonify({"suggestions": suggestions})
+        suggestions = autocomplete_service.search_suggestions(node_type, query, size)
+        # Use set to remove duplicates while preserving order
+        unique_suggestions = list(
+            dict.fromkeys([suggestion["name"] for suggestion in suggestions])
+        )
+        return jsonify({"suggestions": unique_suggestions})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:

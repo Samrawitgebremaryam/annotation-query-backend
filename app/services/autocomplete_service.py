@@ -12,6 +12,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+
 class AutocompleteService:
     def __init__(self, config_path: str = "config/elasticsearch_config.yaml"):
         """Initialize AutocompleteService with Elasticsearch configuration."""
@@ -86,7 +87,7 @@ class AutocompleteService:
                             "preserve_position_increments": True,
                             "max_input_length": 100,
                         },
-                    }
+                    },
                 },
             }
             try:
@@ -145,14 +146,19 @@ class AutocompleteService:
                     """
                     with neo4j_driver.session() as session:
                         result = session.run(
-                            query, last_indexed_time=last_indexed_time, skip=skip, limit=limit
+                            query,
+                            last_indexed_time=last_indexed_time,
+                            skip=skip,
+                            limit=limit,
                         )
 
                         batch_empty = True
                         for record in result:
                             batch_empty = False
                             if not record["name"] or not record["labels"]:
-                                logger.debug(f"Skipping node {record['n'].id} with no name or labels: {record['props']}")
+                                logger.debug(
+                                    f"Skipping node {record['n'].id} with no name or labels: {record['props']}"
+                                )
                                 continue
                             node_type = record["labels"][0].lower()
                             props = record["props"]
@@ -162,7 +168,7 @@ class AutocompleteService:
                                 "name": record["name"],
                                 "neo4j_id": str(record["n"].id),
                                 "node_type": node_type,
-                                "name_suggest": {"input": [record["name"]]}
+                                "name_suggest": {"input": [record["name"]]},
                             }
 
                             # Add other string/list properties dynamically, excluding 'label'
@@ -204,8 +210,11 @@ class AutocompleteService:
                         )
                         es_response = self.es.search(
                             index=index_name,
-                            body={"query": {"match_all": {}}, "_source": ["domain_id", "neo4j_id"]},
-                            size=10000
+                            body={
+                                "query": {"match_all": {}},
+                                "_source": ["domain_id", "neo4j_id"],
+                            },
+                            size=10000,
                         )
                         es_ids = set(
                             hit["_source"].get("domain_id", hit["_source"]["neo4j_id"])
@@ -218,12 +227,16 @@ class AutocompleteService:
                                 for _id in stale_ids
                             ]
                             bulk(self.es, delete_actions, chunk_size=batch_size)
-                            logger.info(f"Deleted {len(stale_ids)} stale documents from {index_name}")
+                            logger.info(
+                                f"Deleted {len(stale_ids)} stale documents from {index_name}"
+                            )
 
                     self._create_index_for_node_type(node_type)
 
                     # Optimize indexing
-                    self.es.indices.put_settings(index=index_name, body={"refresh_interval": "30s"})
+                    self.es.indices.put_settings(
+                        index=index_name, body={"refresh_interval": "30s"}
+                    )
                     actions = [
                         {
                             "_op_type": "index" if not incremental else "update",
@@ -242,13 +255,17 @@ class AutocompleteService:
                             self.es, actions, chunk_size=batch_size, request_timeout=60
                         )
                         if failed:
-                            logger.error(f"Failed to index {len(failed)} nodes for {node_type}: {failed}")
+                            logger.error(
+                                f"Failed to index {len(failed)} nodes for {node_type}: {failed}"
+                            )
                         logger.info(f"Indexed {success} nodes for {node_type}")
                     except Exception as e:
                         logger.error(f"Bulk indexing failed for {node_type}: {str(e)}")
                         raise RuntimeError(f"Bulk indexing failed: {str(e)}")
                     finally:
-                        self.es.indices.put_settings(index=index_name, body={"refresh_interval": "1s"})
+                        self.es.indices.put_settings(
+                            index=index_name, body={"refresh_interval": "1s"}
+                        )
 
                     count = self.es.count(index=index_name)["count"]
                     logger.info(f"Total indexed documents for {node_type}: {count}")
@@ -275,104 +292,43 @@ class AutocompleteService:
             if not self.es.indices.exists(index=index_name):
                 raise ValueError(f"Index for node type {node_type} does not exist")
 
-            suggest_query = {
-                "suggest": {
-                    "name-suggest": {
-                        "prefix": query.lower(),
-                        "completion": {
-                            "field": "name_suggest",
-                            "size": size,
-                            "skip_duplicates": True,
-                            "fuzzy": False,
-                        },
+            search_query = {
+                "query": {
+                    "bool": {
+                        "should": [
+                            {
+                                "prefix": {
+                                    "name": {
+                                        "value": query.lower(),
+                                        "case_insensitive": True,
+                                    }
+                                }
+                            },
+                            {
+                                "prefix": {
+                                    "synonyms": {
+                                        "value": query.lower(),
+                                        "case_insensitive": True,
+                                    }
+                                }
+                            },
+                        ],
+                        "minimum_should_match": 1,
                     }
-                }
+                },
+                "size": size,
+                "_source": ["name"],  # Only return the name field
             }
 
-            response = self.es.search(index=index_name, body=suggest_query)
+            response = self.es.search(index=index_name, body=search_query)
             suggestions = []
-            if "suggest" in response and "name-suggest" in response["suggest"]:
-                for suggestion in response["suggest"]["name-suggest"]:
-                    for option in suggestion["options"]:
-                        suggestion_dict = {
-                            "name": option["_source"]["name"],
-                            "id": option["_source"].get("domain_id", option["_source"]["neo4j_id"]),
-                            "score": option["_score"],
-                            "node_type": option["_source"]["node_type"]
-                        }
-                        # Include other properties dynamically, excluding 'label'
-                        for key, value in option["_source"].items():
-                            if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id", "label"]:
-                                suggestion_dict[key] = value
-                        suggestions.append(suggestion_dict)
+            if "hits" in response and "hits" in response["hits"]:
+                for hit in response["hits"]["hits"]:
+                    suggestions.append({"name": hit["_source"]["name"]})
 
             return suggestions
         except Exception as e:
-            logger.error(f"Failed to search suggestions for query '{query}' in {node_type}: {e}")
-            raise RuntimeError(f"Search failed: {e}")
-
-    def search_all_suggestions(
-        self, query: str, size: int = 10
-    ) -> List[Dict[str, Any]]:
-        """Search for autocomplete suggestions across all node types."""
-        try:
-            if not query or not isinstance(query, str) or len(query) > 100:
-                raise ValueError("Query must be a non-empty string with max length 100")
-            if size < 1 or size > 100:
-                raise ValueError("Size must be between 1 and 100")
-
-            if not self.node_types:
-                # Fallback to fetch indices from Elasticsearch
-                indices_response = self.es.indices.get_alias(index="*")
-                self.node_types = {index.lower() for index in indices_response.keys() if not index.startswith(".")}
-                if not self.node_types:
-                    raise ValueError("No node types indexed")
-                logger.debug(f"Refreshed node_types from Elasticsearch: {self.node_types}")
-
-            # CHANGED: Increase per-index size to capture all matches
-            suggest_query = {
-                "suggest": {
-                    "name-suggest": {
-                        "prefix": query.lower(),
-                        "completion": {
-                            "field": "name_suggest",
-                            "size": size,  # Use full size per index to get all matches
-                            "skip_duplicates": True,
-                            "fuzzy": False,
-                        },
-                    }
-                }
-            }
-
-            suggestions = []
-            for node_type in self.node_types:
-                if not self.es.indices.exists(index=node_type):
-                    logger.debug(f"Index {node_type} does not exist, skipping")
-                    continue
-                logger.debug(f"Searching index: {node_type}")
-                response = self.es.search(index=node_type, body=suggest_query)
-                index_suggestions = []
-                if "suggest" in response and "name-suggest" in response["suggest"]:
-                    for suggestion in response["suggest"]["name-suggest"]:
-                        for option in suggestion["options"]:
-                            suggestion_dict = {
-                                "name": option["_source"]["name"],
-                                "id": option["_source"].get("domain_id", option["_source"]["neo4j_id"]),
-                                "score": option["_score"],
-                                "node_type": option["_source"]["node_type"]
-                            }
-                            # Include other properties dynamically, excluding 'label'
-                            for key, value in option["_source"].items():
-                                if key not in ["name", "neo4j_id", "node_type", "name_suggest", "domain_id", "label"]:
-                                    suggestion_dict[key] = value
-                            index_suggestions.append(suggestion_dict)
-                logger.debug(f"Found {len(index_suggestions)} suggestions in index {node_type}")
-                suggestions.extend(index_suggestions)
-
-            # Sort by score and name, limit to requested size
-            suggestions = sorted(suggestions, key=lambda x: (-x["score"], x["name"]))[:size]
-            logger.debug(f"Total found {len(suggestions)} suggestions for query '{query}'")
-            return suggestions
-        except Exception as e:
-            logger.error(f"Failed to search all suggestions for query '{query}': {e}")
+            logger.error(
+                f"Failed to search suggestions for query '{query}' in {node_type}: {e}"
+            )
             raise RuntimeError(f"Search failed: {e}")
